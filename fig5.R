@@ -2,7 +2,7 @@ library(synExtra)
 library(tidyverse)
 library(cmapR)
 library(here)
-library(egg)
+library(cowplot)
 library(broom)
 library(ggrepel)
 library(seriation)
@@ -61,7 +61,15 @@ theme_bold <- function() {
 
 R <- clue_res_combined %>%
   filter( result_type == "pert", score_level == "summary" ) %>%
-  pluck( "data", 1 )
+  pluck( "data", 1 ) %>%
+  # Fix compound names
+  mutate(
+    name_query = if_else(
+      str_count(name_query, "[0-9]") > 1 | str_detect(name_query, fixed("-")),
+      str_to_upper(name_query),
+      name_query
+    )
+  )
 
 ## Identify relevant gene sets
 relevant_gene_sets <- deseq_res %>%
@@ -90,6 +98,27 @@ relevant_gene_sets <- deseq_res %>%
       slice(1) %>%
       select(query_group, cells, drug_id, time, stim, dataset),
     by = c("cells", "drug_id", "time", "stim")
+  )
+
+## List cell lines used for profiling compounds
+cell_lines_used <- relevant_gene_sets %>%
+  group_by(lspci_id) %>%
+  summarize(
+    cells = case_when(
+      all(
+        c(
+          "BT549", "HCC1806", "Hs578T", "MCF7", "PDX1258", "PDXHCI002", "T47D"
+        ) %in% cells
+      ) ~ if ("rencell" %in% cells) "breast cancer & RenCells"
+          else "8 breast cancer cell lines",
+      cells == "rencell" ~ "differentiated RenCells",
+      TRUE ~ cells
+    ), .groups = "drop"
+  ) %>%
+  distinct() %>%
+  inner_join(
+    distinct(R, name_query, lspci_id_query),
+    by = c("lspci_id" = "lspci_id_query")
   )
 
 ## Isolate the appropriate slice of data
@@ -126,48 +155,12 @@ R_only_genetic <- R2 %>%
 R3 <- R_only_genetic %>%
   dplyr::filter(
     pert_iname %in% {
-      # inner_join(
-      #   .,
-      #   group_by(., pert_iname) %>%
-      #     summarize(
-      #       mean_per_pert = mean(tau)
-      #     ),
-      #   by = "pert_iname"
-      # ) %>%
-      #   mutate(
-      #     mean_diff = abs(tau - mean_per_pert)
-      #   ) %>%
-      #   filter(abs(tau) > 80) %>%
-      #   group_by(name_query) %>%
-      #   arrange(desc(mean_diff)) %>%
-      #   slice(1:10) %>%
-      #   ungroup() %>%
-      #   pull(pert_iname)
-      # group_by(., pert_iname) %>%
-      #   summarize(
-      #     pert_iname_var = var(tau, na.rm = TRUE)
-      #   ) %>%
-      #   ungroup() %>%
-      #   arrange(desc(pert_iname_var)) %>%
-      #   head(50) %>%
-      #   pull(pert_iname)
       group_by(., name_query) %>%
         arrange(desc(abs(tau)), .by_group = TRUE) %>%
         slice(1:10) %>%
         ungroup() %>%
         pull(pert_iname)
     }
-    # pert_iname %in% {
-    #   mean_tau_by_pert <- group_by(., pert_iname) %>%
-    #     summarize(mean_tau = mean(tau), .groups = "drop")
-    #   inner_join(., mean_tau_by_pert, by = "pert_iname") %>%
-    #     group_by(name_query) %>%
-    #     mutate(abs_tau_diff = abs(tau - mean_tau)) %>%
-    #     arrange(desc(abs_tau_diff), .by_group = TRUE) %>%
-    #     slice(1:6) %>%
-    #     ungroup() %>%
-    #     pull(pert_iname)
-    # }
   )
 
 
@@ -189,8 +182,9 @@ comp_order <- function(clust) {
     dist()
   dm %>%
     hclust() %>%
-    reorder(dm) %>%
-    labels()
+    reorder(dm) %>% {
+      .[["labels"]][.[["order"]]]
+    }
 }
 
 DM_clust <- DM %>%
@@ -198,8 +192,9 @@ DM_clust <- DM %>%
   hclust() %>%
   reorder(dist(DM))
 
-lvl <- DM_clust %>%
-  labels()
+lvl <- DM_clust %>% {
+  .[["labels"]][.[["order"]]]
+}
 
 # Divide heatmap into two pieces that we can plot side-by-side
 split_vector <- set_names(
@@ -234,8 +229,47 @@ lvl2 <- R2 %>%
       }
   }
 
+cell_lines_used_plot_data <- cell_lines_used %>%
+  bind_rows(
+    crossing(
+      name_query = setdiff(lvl2, unique(R3[["name_query"]])),
+      y = "a",
+      cells = NA_character_
+    )
+  ) %>%
+  crossing(split_group = c(1, 2)) %>%
+  mutate(
+    name_query = factor(name_query, levels = lvl2),
+    y = "a"
+  )
+
+cell_lines_used_plot <- cell_lines_used_plot_data %>%
+  # Arrange just so that cells with border are drawn last for clean rendering
+  arrange(!str_detect(name_query, "^( )+$")) %>%
+  ggplot(aes(x = name_query, y = y, fill = cells)) +
+    geom_tile(aes(color = str_detect(name_query, "^( )+$"))) +
+    facet_wrap(~split_group, nrow = 1) +
+    theme_minimal() + theme_bold() +
+    scale_fill_brewer(
+      palette = "Set2",
+      breaks = na.omit(cell_lines_used_plot_data$cells),
+      na.value = "white"
+    ) +
+    # Remove cell borders in empty space between left and right side
+    scale_color_manual(
+      values = c("TRUE" = NA_character_, "FALSE" = "black"),
+      guide = FALSE
+    ) +
+    # Remove facet labels
+    theme(
+      strip.background = element_blank(), strip.text.x = element_blank(),
+      axis.text.x = element_blank(), axis.title.x = element_blank(),
+      axis.text.y = element_blank(), axis.title.y = element_blank(),
+      panel.grid = element_blank()
+    )
+
 ## Fix the order via factor levels
-R3 <- R3 %>%
+R4 <- R3 %>%
   bind_rows(
     crossing(
       name_query = setdiff(lvl2, unique(R3[["name_query"]])),
@@ -252,64 +286,8 @@ R3 <- R3 %>%
     pert_iname = factor(pert_iname, lvl)
   )
 
-
-
-# Highlight specific pertubations with boxes
-#
-# highlight_pertubations <- tribble(
-#   ~pertubation, ~group,
-#   "CDK6 OE", "control",
-#   "PSMD2 KD", "proteasome",
-#   "PSMA3 KD", "proteasome",
-#   "PSMA1 KD", "proteasome",
-#   "PSMB2 KD", "proteasome",
-#   "PSMD4 KD", "proteasome",
-#   "CDK4 KD", "control",
-#   "PSMD1 KD", "proteasome",
-#   "PTPN2 KD", "lorlatinib",
-#   "INPPL1 KD", "lorlatinib"
-# ) %>%
-#   mutate(across(pertubation, factor, levels = levels(R3[["pert_iname"]]))) %>%
-#   mutate(across(group, factor)) %>%
-#   mutate(
-#     color = {
-#       highlight_colors <- levels(.[["group"]]) %>% {
-#         palette.colors(
-#           n = length(.),
-#           palette = "Tableau 10"
-#         ) %>%
-#           set_names(.)
-#       }
-#       highlight_colors[group]
-#     }
-#   )
-#
-# palette.colors(n = 3, "Tableau 10")
-
-
 ## Plotting a heatmap of clue hits
-fplot <- function(X, highlight_pertubations) {
-  # highlight_palette <- with(
-  #   highlight_pertubations,
-  #   set_names(unique(color), unique(group))
-  # ) %>%
-  #   c(" " = "black")
-  # X <- X %>%
-  #   left_join(
-  #     highlight_pertubations %>%
-  #       select(pertubation, border_color = color),
-  #     by = c("pert_iname" = "pertubation")
-  #   ) %>%
-  #   mutate(
-  #     border_color = case_when(
-  #       str_detect(name_query, "^( )+$") ~ NA_character_,
-  #       !is.na(border_color) ~ border_color,
-  #       TRUE ~ "#000000"
-  #     ),
-  #     border_size = if_else(
-  #       pert_iname %in%
-  #     )
-  #   )
+fplot <- function(X, cell_lines = NULL) {
   ggplot(
     # Arrange just so that cells with border are drawn last for clean rendering
     X %>% arrange(!str_detect(name_query, "^( )+$")),
@@ -330,12 +308,25 @@ fplot <- function(X, highlight_pertubations) {
     labs(x = "Drug query", y = "Clue target class", fill = "Tau" ) +
     facet_wrap(~split_group, scales = "free_y") +
     # Remove facet labels
-    theme(strip.background = element_blank(), strip.text.x = element_blank())
+    theme(
+      strip.background = element_blank(), strip.text.x = element_blank(),
+      panel.grid = element_blank()
+    )
 }
+
+connectivity_plot <- fplot(R4)
+
+combined_plot <- plot_grid(
+  cell_lines_used_plot,
+  connectivity_plot,
+  ncol = 1,
+  align = "v", axis = "lr",
+  rel_heights = c(1, 25)
+)
 
 ggsave(
   file.path(wd, "fig5.pdf"),
-  fplot(R3),
-  width = 10, height = 10
+  combined_plot,
+  width = 11.5, height = 10
 )
 
