@@ -221,6 +221,11 @@ wilcox_self_similarities <- R2 %>%
         p.value = map_dbl(wilcox, "p.value")
     )
 
+wilcox_self_similarities %>%
+  count(source, significant = p.value < 0.05)
+
+# 24 out of 32 DGE profiles show significant self-similarity
+
 library(ggbeeswarm)
 
 self_similarity_beeswarm <- R2 %>%
