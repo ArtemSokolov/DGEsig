@@ -2,6 +2,7 @@ library( tidyverse )
 library( seriation )   # For optimal leaf reordering
 library(synapser)
 library(here)
+library(qs)
 
 pathData <- "~/data/DGEsig"
 
@@ -9,7 +10,7 @@ wd <- here("fig2")
 dir.create(wd, showWarnings = FALSE)
 
 synapser::synLogin()
-syn <- synExtra::synDownloader(pathData, ifcollision="overwrite.local")
+syn <- synExtra::synDownloader(pathData)
 
 rdbu_colormap <- RColorBrewer::brewer.pal(5, "RdBu")
 
@@ -23,32 +24,71 @@ cmap_nonlinear_colormap <- list(
 )
 
 ## Load all results
-R <- syn("syn21907166.5") %>%
+R <- syn("syn26468923") %>%
     # file.path(pathData, "clue_results_combined.rds") %>%
-    read_rds() %>%
+    qread() %>%
     filter( result_type == "pert", score_level == "summary" ) %>%
-    pluck( "data", 1 ) %>%
-    dplyr::rename(idQ = lspci_id_query, idT = lspci_id_target, drugT = pert_iname)
+    pluck( "data", 1 )
 
 condition_conc_vars <- c("cells", "drug_id", "lspci_id", "stim", "stim_conc", "time")
 
-M <- syn("syn22000707.8") %>%
+M <- syn("syn25292310") %>%
     # syn("syn22000707") %>%
-    read_rds() %>%
-    unnest(meta) %>%
-    mutate(
-        gene_set = exec(
-            paste,
-            !!!as.list(.)[condition_conc_vars],
-            sep = "_"
-        ) %>%
-            str_replace_all("\\s", "_") %>%
-            str_replace_all("[^\\w]", "")
-    )
+    qread() %>%
+    unnest(meta)
 
-M_cell_info <- M %>%
-    filter(dataset != "fp_transdiff") %>%
-    distinct(gene_set, lspci_id, cells)
+
+cmap_gene_sets <- syn("syn25314203") %>%
+  qread()
+
+dge_gene_sets <- syn("syn25303778") %>%
+  qread()
+
+gene_set_meta <- bind_rows(
+  l1000 = cmap_gene_sets %>%
+    select(
+      cell_aggregate_method, replicate_method,
+      lspci_id, drug_conc = pert_dose, time = pert_time, cells = cell_id,
+      cutoff, gene_set_id
+    ),
+  dge = dge_gene_sets %>%
+    select(
+      concentration_method, replicate_method,
+      lspci_id, drug_conc, cells, stim, stim_conc,
+      time, gene_set_id
+    ),
+  .id = "source"
+) %>%
+  mutate(cells = coalesce(cells, "summary"))
+
+cmap_meta <- syn("syn21547097") %>%
+  read_csv(
+    col_types = cols(
+      cmap_name = col_character(),
+      compound_aliases = col_character(),
+      target = col_character(),
+      moa = col_character()
+    )
+  )
+
+compound_names <- syn("syn26260344") %>%
+  read_csv() %>%
+  select(lspci_id, name) %>%
+  drop_na() %>%
+  bind_rows(
+    anti_join(cmap_meta, ., by = "lspci_id") %>%
+      select(name = pert_iname, lspci_id) %>%
+      drop_na(name)
+  ) %>%
+  group_by(lspci_id) %>%
+  slice(1) %>%
+  ungroup()
+
+M_cell_info <- bind_rows(
+  select(cmap_gene_sets, gene_set_id, lspci_id, cells = cell_id),
+  select(dge_gene_sets, gene_set_id, lspci_id, cells)
+) %>%
+  distinct()
 
 # pertubation_meta <- syn("syn21547097") %>%
 #     read_csv()
@@ -57,53 +97,125 @@ M_cell_info <- M %>%
 #     read_csv()
 
 ## Identify the common set of drugs between DGE-query, L1000-query and targets
-qcom <- R %>% group_by( source ) %>% summarize_at( "idQ", list ) %>%
-    with(lift(intersect)(idQ) )
+cmap_returned <- filter(cmap_meta, pert_id %in% R$pert_id)$lspci_id %>% unique()
+dge_queried <- filter(dge_gene_sets, gene_set_id %in% R$gene_set)$lspci_id %>% unique()
+qcom <- intersect(cmap_returned, dge_queried) %>%
+  na.omit()
 
-dmap <- R %>% select( idT, drugT ) %>% filter( idT %in% qcom ) %>%
-    distinct() %>% with( set_names(drugT,idT) )
+dmap <- cmap_meta %>%
+  filter(pert_id %in% R$pert_id) %>%
+  pull(lspci_id) %>%
+  intersect(qcom)
 
-diff <- setdiff(qcom, names(dmap))
+diff <- setdiff(qcom, dmap)
 
 ## Isolate the appropriate slice of data
 ## Aggregate across multiple entries to compute master similarity score
-R2 <- R %>% filter(idT %in% names(dmap), idQ %in% names(dmap)) %>%
-    select( idQ, idT, tau, source, z_score_cutoff, query_type, cell_id_query ) %>%
-    group_by( idQ, idT, source, z_score_cutoff, query_type ) %>%
-    summarize(
-        "tau" = tau[ which.max(abs(tau)) ],
-        cell_id_query = list(unique(cell_id_query)),
-        .groups = "drop"
-    ) %>%
-    mutate_at( c("idQ", "idT"), as.character ) %>%
-    mutate_at( "source", toupper ) %>%
-    mutate( drugT = dmap[idT], drugQ = dmap[idQ] )
-    # nest_join(
-    #     transmute(M_cell_info, lspci_id = as.character(lspci_id), cells) %>%
-    #         distinct(),
-    #     by = c("idQ" = "lspci_id"),
-    #     name = "cells"
-    # )
+R2 <- gene_set_meta %>%
+  filter(
+    # cell_aggregate_method == "cells_aggregated" | is.na(cell_aggregate_method),
+    # replicate_method == "replicates_aggregated" | is.na(replicate_method),
+    # concentration_method == "concentration_aggregated" | is.na(concentration_method),
+    is.na(stim)
+  ) %>%
+  rename(
+    lspci_id_q = lspci_id, cells_q = cells
+  ) %>%
+  distinct() %>%
+  inner_join(
+    R %>%
+      rename(cells_t = cell_id),
+    by = c("gene_set_id" = "gene_set")
+  ) %>%
+  left_join(
+    cmap_meta %>%
+      distinct(pert_id, lspci_id_t = lspci_id),
+    by = "pert_id"
+  ) %>% {
+    bind_rows(
+      filter(., source == "l1000"),
+      # Actually didn't perform cell aggregation for dge data... need to do here
+      filter(., source == "dge") %>%
+        group_by(source, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_t) %>%
+        summarize(
+          tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
+            {.[order(abs(.))[2]]},
+          .groups = "drop"
+        ) %>%
+        mutate(cell_aggregate_method = "cells_aggregated")
+    )
+  } %>%
+  # For some reason, CMap sometimes returns multiple independent connectivities
+  # of the same query and target compound. Probably replicate signatures
+  # on their side?
+  # Aggregating by taking the 33- or 66-percentile, whichever has
+  # higher absolute value. Approach used by CMap to aggregate cell lines
+  group_by(source, cell_aggregate_method, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_q, cells_t, cutoff) %>%
+  summarize(
+      tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
+        {.[order(abs(.))[2]]},
+      .groups = "drop"
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_q = name),
+    by = c("lspci_id_q" = "lspci_id")
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_t = name),
+    by = c("lspci_id_t" = "lspci_id")
+  )
+
+# Start off with data where replicates, cells, and concentrations aggregated and
+# using a z-threshold of 0.7
+R3 <- R2 %>%
+  filter(
+    cell_aggregate_method == "cells_aggregated" | is.na(cell_aggregate_method),
+    replicate_method == "replicates_aggregated" | is.na(replicate_method),
+    concentration_method == "concentration_aggregated" | is.na(concentration_method),
+    # cutoff == 0.7 | is.na(cutoff),
+    lspci_id_t %in% qcom,
+    lspci_id_q %in% qcom
+  ) %>%
+  mutate(
+    name_q = str_trunc(name_q, 16, ellipsis = "…"),
+    name_t = str_trunc(name_t, 16, ellipsis = "…")
+  )
 
 ## Perform hierarchical clustering on drugT profiles (columns in the final plot)
 ## Use the DGE slice because it is cleaner and less saturated
-DM <- R2 %>% filter(query_type == "aggregated", z_score_cutoff == 0.7) %>% select( source, drugT, drugQ, tau ) %>%
-    spread( drugT, tau ) %>% select(-source, -drugQ) %>% as.matrix() %>% t() %>% dist
+R3_mat <- R3 %>% filter(source == "dge") %>% select( name_q, name_t, tau ) %>%
+  # IKK16 slipped through. It was profiled with DGE but
+  # it's signature for whatever reason didn't return results in CMap
+  # (too few genes?). L1000 signature was succesfull
+  filter(name_q != "IKK16", name_t != "IKK16") %>%
+  pivot_wider( names_from = name_t, values_from = tau ) %>%
+  column_to_rownames("name_q") %>% as.matrix()
+# We want to cluster both rows and cols but want them ordered
+# identically. Just adding distance matrices of matrix and it's transpose
+# DM <- R3_mat %>% t() %>% dist()
+DM <- (R3_mat %>% t() %>% dist()) +
+  R3_mat %>% dist()
 lvl <- hclust(DM) %>% reorder(DM) %>%  dendextend::order.hclust() %>% labels(DM)[.]
 
 ## Fix the order via factor levels
-R2 <- R2 %>% mutate(drugT = factor(drugT, lvl),
-                    drugQ = factor(drugQ, rev(lvl)))
+R4 <- R3 %>% mutate(name_q = factor(name_q, lvl),
+                    name_t = factor(name_t, rev(lvl)))
 
 # Complete missing observations at z-scores that yielded insufficient
 # genes for Clue with NA
-R2_completed <- bind_rows(
-    R2 %>%
-        filter(source == "DGE"),
-    R2 %>%
-        filter(source == "L1000") %>%
-        complete(nesting(idQ, idT, source, drugT, drugQ), z_score_cutoff, query_type)
-)
+R4_completed <- bind_rows(
+    R4 %>%
+        filter(source == "dge"),
+    R4 %>%
+        filter(source == "l1000") %>%
+        complete(nesting(name_q, name_t, source), cutoff)
+) %>%
+  # IKK16 slipped through. It was profiled with DGE but
+  # it's signature for whatever reason didn't return results in CMap
+  # (too few genes?). L1000 signature was succesfull
+  filter(name_q != "IKK16", name_t != "IKK16")
 
 ## Plotting elements
 pal <- rev(RColorBrewer::brewer.pal(n=7, name="RdBu"))
@@ -117,10 +229,10 @@ theme_bold <- function() {
 
 ## Plotting a heatmap of clue hits
 fplot <- function(X) {
-    ggplot( X, aes(x=drugT, y=drugQ, fill=tau) ) +
+    ggplot( X, aes(x=name_t, y=name_q, fill=tau) ) +
         theme_minimal() + theme_bold() +
         geom_tile(color="black") +
-        geom_tile(data=filter(X, idQ==idT), color="black", size=1) +
+        geom_tile(data=filter(X, name_q==name_t), color="black", size=1) +
         scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
         # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
         xlab( "CMap Target" )
@@ -128,18 +240,20 @@ fplot <- function(X) {
 
 composite_plot <- function(X) {
     ## DGE plot
-    gg1 <- fplot( filter(X, source == "DGE") ) +
+    gg1 <- fplot( filter(X, source == "dge") ) +
         scale_x_discrete(position = "top") +
         theme(axis.title.x = element_blank(),
-              axis.text.x = element_text(hjust=0, vjust=0.5)) +
+              axis.text.x = element_text(hjust=0, vjust=0.5),
+              plot.margin = margin(r = 0.25, l = 0.25, unit = "in")) +
         ylab( "3' DGE Query" )
 
     ## L1000 plot
-    gg2 <- fplot( filter(X, source == "L1000") ) +
+    gg2 <- fplot( filter(X, source == "l1000") ) +
         ylab( "L1000 Query" ) +
         scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
         # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100)) +
-        theme(legend.position = "bottom")
+        theme(legend.position = "bottom",
+              plot.margin = margin(r = 0.25, l = 0.25, unit = "in"))
 #
 #     cell_plot <- X %>%
 #         distinct(drugQ, cell_id_query) %>%
@@ -164,10 +278,10 @@ composite_plot <- function(X) {
 #             )
 
     ## Summary plot
-    S <- X %>% filter(idQ == idT) %>%
-        mutate_at("source", factor, levels=c("L1000","DGE")) %>%
-        mutate_at("source", fct_recode, `Self (3' DGE)`="DGE", `Self (L1000)`="L1000")
-    ggs <- ggplot( S, aes(x=drugT, y=source, fill=tau) ) +
+    S <- X %>% filter(name_q == name_t) %>%
+        mutate_at("source", factor, levels=c("l1000","dge")) %>%
+        mutate_at("source", fct_recode, `Self (3' DGE)`="dge", `Self (L1000)`="l1000")
+    ggs <- ggplot( S, aes(x=name_t, y=source, fill=tau) ) +
         theme_minimal() + theme_bold() +
         geom_tile(color="black") + ylab("") +
         scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
@@ -175,43 +289,47 @@ composite_plot <- function(X) {
         theme(axis.text.x = element_blank(), axis.title.x = element_blank())
 
     ## Create the composite plot
-    egg::ggarrange( gg1, ggs, gg2, heights=c(7.5,0.5,7.5), widths = c(6.5), draw=FALSE )
+    egg::ggarrange( gg1, ggs, gg2, heights=c(7.5,0.5,7.5), widths = c(7), draw=FALSE )
 }
 
-ggcomp <- R2_completed %>%
-    filter( source == "L1000" ) %>%
-    group_nest( z_score_cutoff, query_type ) %>%
+ggcomp <- R4_completed %>%
+    filter( source == "l1000" ) %>%
+    group_nest( cutoff ) %>%
     mutate(
         data = map(
             data,
             bind_rows,
-            filter( R2_completed, source == "DGE")
+            filter( R4_completed, source == "dge")
         ) %>%
             map(composite_plot)
     )
 
+ggsave(
+  "fig2.pdf",
+  ggcomp$data[[1]], width = 10, height = 18
+)
 
-pwalk(
+
+ pwalk(
     ggcomp,
-    function(z_score_cutoff, query_type, data, ...) {
+    function(cutoff, query_type, data, ...) {
         walk(
           file.path(
             wd,
-            paste0("fig2_", z_score_cutoff, "_", query_type, c(".png", ".pdf"))
+            paste0("fig2_", cutoff, c(".png", ".pdf"))
           ),
-          ggsave, data, width=6.5, height=14 )
+          ggsave, data, width=10, height=18 )
     }
 )
 
 # Test if self-similarity is significantly higher than other similarities
 
-wilcox_self_similarities <- R2 %>%
-    filter(query_type == "aggregated", is.na(z_score_cutoff) | z_score_cutoff == 0.7) %>%
-    group_by(source, idQ, drugQ) %>%
+wilcox_self_similarities <- R3 %>%
+    group_by(source, cutoff, lspci_id_q, name_q) %>%
     summarize(
         wilcox = wilcox.test(
-            tau[idQ != idT],
-            mu = tau[idQ == idT],
+            tau[lspci_id_q != lspci_id_t],
+            mu = tau[lspci_id_q == lspci_id_t],
             alternative = "less"
         ) %>%
             list(),
@@ -222,17 +340,18 @@ wilcox_self_similarities <- R2 %>%
     )
 
 wilcox_self_similarities %>%
+  filter(is.na(cutoff) | cutoff == 0.7) %>%
   count(source, significant = p.value < 0.05)
 
 # 24 out of 32 DGE profiles show significant self-similarity
 
 library(ggbeeswarm)
 
-self_similarity_beeswarm <- R2 %>%
-    filter(query_type == "aggregated", is.na(z_score_cutoff) | z_score_cutoff == 0.7) %>%
+self_similarity_beeswarm <- R3 %>%
+    filter(is.na(cutoff) | cutoff == 0.7) %>%
     mutate(
         self_similarity = if_else(
-            idQ == idT,
+            lspci_id_q == lspci_id_t,
             "self_similarity",
             "cross_similarity"
         ) %>%
@@ -240,7 +359,7 @@ self_similarity_beeswarm <- R2 %>%
     ) %>%
     arrange(self_similarity) %>%
         ggplot(
-            aes(tau, drugQ, color = self_similarity)
+            aes(tau, name_q, color = self_similarity)
         ) +
         geom_quasirandom(
             data = ~filter(.x, self_similarity == "cross_similarity"),
@@ -325,7 +444,7 @@ self_similarity_stats <- R2 %>%
 
 wilcox_self_similarities_col_plot <- wilcox_self_similarities %>%
     mutate(log_p = -log10(p.value)) %>%
-    ggplot(aes(x = log_p, y = drugQ, fill = source)) +
+    ggplot(aes(x = log_p, y = name_q, fill = source)) +
     geom_col() +
     facet_wrap(~source, nrow = 1) +
     guides(fill = FALSE)
