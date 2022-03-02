@@ -6,6 +6,7 @@ library(cowplot)
 library(broom)
 library(ggrepel)
 library(seriation)
+library(qs)
 
 synapser::synLogin()
 syn <- synExtra::synDownloader("data")
@@ -15,38 +16,100 @@ dir.create(wd, showWarnings = FALSE)
 
 theme_set(theme_bw())
 
-compound_name_map <- syn("syn22035396.3") %>%
-  read_rds() %>%
-  filter(fp_name == "morgan_normal") %>%
-  chuck("data", 1)
+cmap_meta <- syn("syn21547097") %>%
+  read_csv(
+    col_types = cols(
+      cmap_name = col_character(),
+      compound_aliases = col_character(),
+      target = col_character(),
+      moa = col_character()
+    )
+  )
 
-cmap_gene_meta <- syn("syn21547102") %>%
+compound_names <- syn("syn26260344") %>%
+  read_csv() %>%
+  select(lspci_id, name) %>%
+  drop_na() %>%
+  bind_rows(
+    anti_join(cmap_meta, ., by = "lspci_id") %>%
+      select(name = pert_iname, lspci_id) %>%
+      drop_na(name)
+  ) %>%
+  group_by(lspci_id) %>%
+  slice(1) %>%
+  ungroup()
+
+
+cmap_gene_sets <- syn("syn25314203") %>%
+  qread() %>%
+  as_tibble()
+
+dge_gene_sets <- syn("syn25303778") %>%
+  qread() %>%
+  as_tibble()
+
+gene_set_meta <- bind_rows(
+  l1000 = cmap_gene_sets %>%
+    select(
+      cell_aggregate_method, replicate_method,
+      lspci_id, drug_conc = pert_dose, time = pert_time, cells = cell_id,
+      cutoff, gene_set_id
+    ),
+  dge = dge_gene_sets %>%
+    select(
+      concentration_method, replicate_method,
+      lspci_id, drug_conc, cells, stim, stim_conc,
+      time, gene_set_id
+    ),
+  .id = "source"
+) %>%
+  mutate(cells = coalesce(cells, "summary"))
+
+x <- inner_join(
+  dge_gene_sets,
+  cmap_gene_sets %>%
+    filter(cell_aggregate_method == "per_cell_line"),
+  by = c("lspci_id", "cells" = "cell_id")
+) %>%
+  distinct(lspci_id, cells)
+
+cmap_meta <- syn("syn21547097") %>%
+  read_csv(
+    col_types = cols(
+      cmap_name = col_character(),
+      compound_aliases = col_character(),
+      target = col_character(),
+      moa = col_character()
+    )
+  )
+
+sig_meta <- syn("syn21547101") %>%
   read_csv()
 
-clue_res_dge <- syn("syn21907139") %>%
-  read_rds()
+dge_meta <- syn("syn25292310") %>%
+  qread()
 
-clue_res_l1000 <- syn("syn21907143") %>%
-  read_rds()
+x <- inner_join(
+  dge_meta %>%
+    unnest(meta),
+  sig_meta,
+  by = c("lspci_id", "cells" = "cell_id")
+) %>%
+  distinct(lspci_id, cells) %>%
+  drop_na() %>%
+  left_join(
+    compound_names
+  )
 
-clue_res_combined <- syn("syn21907166.4") %>%
-  read_rds()
-# clue_res_combined_2 <- clue_res_combined
 
-pertubation_meta <- syn("syn21547097.6") %>%
+pertubation_meta <- syn("syn21547097") %>%
   read_csv()
 
-signature_meta <- syn("syn21547101.6") %>%
+signature_meta <- syn("syn21547101") %>%
   read_csv()
 
-dge_meta <- syn("syn22000707.8") %>%
-  read_rds()
-
-deseq_res <- syn("syn22017733.1") %>%
-  read_rds()
-
-deseq_meta <- syn("syn21558154.4") %>%
-  read_rds()
+# dge_meta <- syn("syn25292310") %>%
+#   qread()
 
 ## Plotting elements
 pal <- rev(RColorBrewer::brewer.pal(n=7, name="RdBu"))
@@ -58,67 +121,65 @@ theme_bold <- function() {
         axis.ticks = element_blank())
 }
 
-
-R <- clue_res_combined %>%
+## Load all results
+R <- syn("syn26468923") %>%
+  # file.path(pathData, "clue_results_combined.rds") %>%
+  qread() %>%
   filter( result_type == "pert", score_level == "summary" ) %>%
-  pluck( "data", 1 ) %>%
-  # Fix compound names
-  mutate(
-    name_query = if_else(
-      str_count(name_query, "[0-9]") > 1 | str_detect(name_query, fixed("-")),
-      str_to_upper(name_query),
-      name_query
-    )
-  )
+  pluck( "data", 1 )
 
 ## Identify relevant gene sets
-relevant_gene_sets <- deseq_res %>%
-  mutate(
-    gene_set = condition_conc %>%
-      str_replace_all("\\s", "_") %>%
-      str_replace_all("[^\\w]", "")
-  ) %>%
-  inner_join(
-    dge_meta %>%
+relevant_gene_sets <- dge_gene_sets %>%
+  drop_na(lspci_id) %>%
+  filter(
+    concentration_method == "concentration_aggregated",
+    replicate_method == "replicates_aggregated",
+    lspci_id %in% {dge_meta %>%
       unnest(meta) %>%
-      mutate(
-        query_group = case_when(
-          lspci_id %in% c(90768, 91047, 93750, 77650) ~ "controls",
-          !lspci_id %in% signature_meta$lspci_id ~ paste("unknowns", dataset, sep = " "),
-          TRUE ~ NA_character_
-        )
-      ) %>%
       filter(
-        !is.na(query_group),
-        dataset %in% c("sr_repurposing", "ld_dub", "lincs_cdk4_6_7"),
-        is.na(stim)
+          !lspci_id %in% cmap_gene_sets$lspci_id,
+          dataset %in% c("sr_repurposing", "ld_dub", "lincs_cdk4_6_7", "okl")
       ) %>%
-      group_by(query_group, dataset, cells, drug_id) %>%
-      arrange(desc(time)) %>%
-      slice(1) %>%
-      select(query_group, cells, drug_id, time, stim, dataset),
-    by = c("cells", "drug_id", "time", "stim")
+      pull(lspci_id) %>%
+        c(94539, 91464, 78621, 89588)},
+    is.na(stim)
+  ) %>%
+  mutate(
+    query_group = case_when(
+      lspci_id %in% c(94539, 91464, 78621, 89588) ~ "controls",
+      TRUE ~ "unknowns"
+    )
   )
+  # filter(
+  #   concentration_method == "concentration_aggregated",
+  #   replicate_method == "replicates_aggregated",
+  #   !lspci_id %in% cmap_gene_sets$lspci_id,
+  #   dataset %in% c("sr_repurposing", "ld_dub", "lincs_cdk4_6_7"),
+  #   is.na(stim)
+  # ) %>%
+
 
 ## List cell lines used for profiling compounds
 cell_lines_used <- relevant_gene_sets %>%
+  distinct(lspci_id, cells) %>%
+  drop_na() %>%
   group_by(lspci_id) %>%
   summarize(
-    cells = case_when(
+    cells = if(
       all(
         c(
           "BT549", "HCC1806", "Hs578T", "MCF7", "PDX1258", "PDXHCI002", "T47D"
         ) %in% cells
-      ) ~ if ("rencell" %in% cells) "breast cancer & RenCells"
-          else "8 breast cancer cell lines",
-      cells == "rencell" ~ "differentiated RenCells",
-      TRUE ~ cells
-    ), .groups = "drop"
+      )
+    ) if ("rencell" %in% cells) "breast cancer & RenCells"
+          else "8 breast cancer cell lines"
+    else if (all(cells == "rencell")) "differentiated RenCells"
+    else paste(cells, collapse = " "),
+    .groups = "drop"
   ) %>%
-  distinct() %>%
-  inner_join(
-    distinct(R, name_query, lspci_id_query),
-    by = c("lspci_id" = "lspci_id_query")
+  left_join(
+    compound_names %>%
+      rename(name_q = "name")
   )
 
 ## Isolate the appropriate slice of data
@@ -128,18 +189,17 @@ R2 <- R %>%
   # filter(pert_type == "trt_cp") %>%
   inner_join(
     relevant_gene_sets %>%
-      distinct(query_group, gene_set, drug_id, dataset),
-    by = "gene_set"
+      distinct(query_group, gene_set_id, lspci_id),
+    by = c("gene_set" = "gene_set_id")
   ) %>%
   # dplyr::rename(pert_iname = id) %>%
-  group_by( query_group, pert_type, pert_iname, name_query, source, z_score_cutoff ) %>%
+  group_by( query_group, pert_type, pert_iname, lspci_id ) %>%
   summarize_at(
     "tau", ~quantile(.x, c(0.67, 0.33), names = FALSE) %>%
       {.[order(abs(.))[2]]}
     # "tau", ~.x[ which.max(abs(.x)) ]
   ) %>%
-  ungroup() %>%
-  mutate_at( "source", toupper )
+  ungroup()
 
 # FInd most similar drugs per query
 
@@ -155,25 +215,28 @@ R_only_genetic <- R2 %>%
 R3 <- R_only_genetic %>%
   dplyr::filter(
     pert_iname %in% {
-      group_by(., name_query) %>%
+      group_by(., lspci_id) %>%
         arrange(desc(abs(tau)), .by_group = TRUE) %>%
         slice(1:10) %>%
         ungroup() %>%
         pull(pert_iname)
     }
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_q = "name")
   )
 
 
 ## Perform hierarchical clustering on drugT profiles (columns in the final plot)
 ## Use the DGE slice because it is cleaner and less saturated
 DM <- R3 %>%
-  filter( source == "DGE" ) %>%
   select(
-    name_query,
+    name_q,
     pert_iname,
     tau
   ) %>%
-  spread( name_query, tau ) %>%
+  spread( name_q, tau ) %>%
   as.data.frame %>%
   column_to_rownames("pert_iname")
 
@@ -204,16 +267,15 @@ split_vector <- set_names(
 
 # Complicated way to fix factor levels on x-axis so it includes spaces
 # between groups of query datasets
-lvl2 <- R2 %>%
-  filter( source == "DGE" ) %>%
-  distinct(name_query, query_group) %>%
+lvl2 <- R3 %>%
+  distinct(name_q, query_group) %>%
   group_by(query_group) %>%
   group_map(
     function(.x, ...) {
-      queries <- unique(.x[["name_query"]])
+      queries <- unique(.x[["name_q"]])
       if (length(queries) == 1)
         return(queries)
-      DM[, queries] %>%
+      DM[, as.character(queries)] %>%
         t() %>%
         comp_order()
     }
@@ -226,28 +288,29 @@ lvl2 <- R2 %>%
     ) %>%
       {
         exec(c, !!!.)
-      }
+      } %>%
+      head(n = -1)
   }
 
 cell_lines_used_plot_data <- cell_lines_used %>%
   bind_rows(
     crossing(
-      name_query = setdiff(lvl2, unique(R3[["name_query"]])),
+      name_q = setdiff(lvl2, unique(R3[["name_q"]])),
       y = "a",
       cells = NA_character_
     )
   ) %>%
   crossing(split_group = c(1, 2)) %>%
   mutate(
-    name_query = factor(name_query, levels = lvl2),
+    name_q = factor(name_q, levels = lvl2),
     y = "a"
   )
 
 cell_lines_used_plot <- cell_lines_used_plot_data %>%
   # Arrange just so that cells with border are drawn last for clean rendering
-  arrange(!str_detect(name_query, "^( )+$")) %>%
-  ggplot(aes(x = name_query, y = y, fill = cells)) +
-    geom_tile(aes(color = str_detect(name_query, "^( )+$"))) +
+  arrange(!str_detect(name_q, "^( )+$")) %>%
+  ggplot(aes(x = name_q, y = y, fill = cells)) +
+    geom_tile(aes(color = str_detect(name_q, "^( )+$"))) +
     facet_wrap(~split_group, nrow = 1) +
     theme_minimal() + theme_bold() +
     scale_fill_brewer(
@@ -258,12 +321,12 @@ cell_lines_used_plot <- cell_lines_used_plot_data %>%
     # Remove cell borders in empty space between left and right side
     scale_color_manual(
       values = c("TRUE" = NA_character_, "FALSE" = "black"),
-      guide = FALSE
+      guide = "none"
     ) +
     # Remove facet labels
     theme(
       strip.background = element_blank(), strip.text.x = element_blank(),
-      axis.text.x = element_blank(), axis.title.x = element_blank(),
+      axis.title.x = element_blank(),
       axis.text.y = element_blank(), axis.title.y = element_blank(),
       panel.grid = element_blank()
     )
@@ -272,7 +335,7 @@ cell_lines_used_plot <- cell_lines_used_plot_data %>%
 R4 <- R3 %>%
   bind_rows(
     crossing(
-      name_query = setdiff(lvl2, unique(R3[["name_query"]])),
+      name_q = setdiff(lvl2, unique(R3[["name_q"]])),
       pert_iname = unique(.[["pert_iname"]]),
       tau = NA_real_
     )
@@ -282,7 +345,7 @@ R4 <- R3 %>%
     split_group = split_vector[pert_iname] %>%
       as.character(),
     # recode("2" = "3"),
-    name_query = factor(name_query, lvl2),
+    name_q = factor(name_q, lvl2),
     pert_iname = factor(pert_iname, lvl)
   )
 
@@ -290,14 +353,14 @@ R4 <- R3 %>%
 fplot <- function(X, cell_lines = NULL) {
   ggplot(
     # Arrange just so that cells with border are drawn last for clean rendering
-    X %>% arrange(!str_detect(name_query, "^( )+$")),
-    aes(x=name_query,
+    X %>% arrange(!str_detect(name_q, "^( )+$")),
+    aes(x=name_q,
         y=pert_iname,
         fill=tau)
   )+
     theme_minimal() + theme_bold() +
     geom_tile(
-      aes(color = str_detect(name_query, "^( )+$"))
+      aes(color = str_detect(name_q, "^( )+$"))
     ) +
     # Remove cell borders in empty space between left and right side
     scale_color_manual(
@@ -310,18 +373,20 @@ fplot <- function(X, cell_lines = NULL) {
     # Remove facet labels
     theme(
       strip.background = element_blank(), strip.text.x = element_blank(),
-      panel.grid = element_blank()
+      panel.grid = element_blank(),
+      axis.text.x = element_blank(), axis.title.x = element_blank(),
+      axis.text.y = element_blank(), axis.title.y = element_blank()
     )
 }
 
 connectivity_plot <- fplot(R4)
 
 combined_plot <- plot_grid(
-  cell_lines_used_plot,
   connectivity_plot,
+  cell_lines_used_plot,
   ncol = 1,
   align = "v", axis = "lr",
-  rel_heights = c(1, 25)
+  rel_heights = c(25, 10)
 )
 
 ggsave(

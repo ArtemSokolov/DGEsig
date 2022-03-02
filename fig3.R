@@ -82,7 +82,7 @@ theme_bold <- function() {
 
 ## Additional parameters for each plot
 fplot <- function( .df, isTop ) {
-    gg <- ggplot(.df, aes(x=drugQ, y=Tau, color=Tissue, group=drugQ)) + 
+    gg <- ggplot(.df, aes(x=drugQ, y=Tau, color=Tissue, group=drugQ)) +
         theme_bw() + theme_bold() +
         geom_beeswarm(cex=3, beeswarmArgs=list(side=-1)) +
         geom_vline(xintercept=c(1.7,2.7), color="lightgray") +

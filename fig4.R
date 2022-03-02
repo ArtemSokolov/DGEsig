@@ -83,7 +83,7 @@ theme_bold <- function() {
   theme(axis.text.x = etxt(12, angle=90, hjust=1, vjust=0.5),
         axis.text.y = etxt(12), axis.title = etxt(14),
         legend.text = etxt(12), legend.title = etxt(14),
-        title = etxt(12))
+        title = etxt(12), strip.text = etxt(12), strip.background = element_blank())
 }
 
 calculate_dose_response_l1000 <- function(signatures, z_threshold = 1.645) {
@@ -175,56 +175,38 @@ dose_response_pairwise_fisher <- function(df) {
 }
 
 dose_response_curve <- function(df) {
-  scale_factor <- df %>%
-    group_by(method) %>%
-    summarize(max_val = max(abs(change))) %>%
-    ungroup() %>%
-    spread(method, max_val) %>%
-    {.[["l1000"]]/.[["dge"]]}
   df %>%
     mutate(
-      change_scaled = if_else(method == "dge", change*scale_factor, change)
+      method = factor(method, levels = c("dge", "l1000"), labels = c("DGE", "L1000"))
     ) %>%
-    # ggplot(aes(drug_conc, change_norm, color = method)) +
-    ggplot(aes(drug_conc, change_scaled, color = method)) +
-    geom_hline(yintercept = 0, color = "grey30") +
+    ggplot(aes(drug_conc, change_norm, color = method)) +
+    # ggplot(aes(drug_conc, change_scaled, color = method)) +
+    # geom_hline(yintercept = 0, color = "grey30") +
     geom_point(alpha = 0.5) +
-    scale_y_continuous(
-      sec.axis = sec_axis(~./scale_factor, name = "DGE")
-    ) +
+    # scale_y_continuous(
+    #   sec.axis = sec_axis(~./scale_factor, name = "DGE")
+    # ) +
     geom_smooth(aes(fill = method, group = method), method = "lm", alpha = 0.1) +
     scale_x_log10() +
-    labs(x = "Dose (uM)", y = "L1000")
+    labs(x = "Dose (uM)", y = "Differential expression z-score")
 }
 
 dose_response_cor_and_curves <- function(df, seed = 42, highlighted_genes = NULL) {
   # browser()
   set.seed(seed)
+  pos_boundaries <- c(-1, -0.25, 0.25, 1)
   dose_cor_plot_data <- dose_response_pairwise(df) %>%
     mutate(
-      pos = paste(
-        case_when(
-          dge < -0.25 ~ "left",
-          dge < 0.25 ~ "middle",
-          dge < 1 ~ "right",
-          TRUE ~ NA_character_
-        ),
-        case_when(
-          l1000 < -0.25 ~ "bottom",
-          l1000 < 0.25 ~ "middle",
-          l1000 < 1 ~ "top",
-          TRUE ~ NA_character_
-        ),
-        sep = "_"
-      )
+      pos_x = cut(dge, breaks = pos_boundaries, labels = c("left", "middle", "right")),
+      pos_y = cut(l1000, breaks = pos_boundaries, labels = c("bottom", "middle", "top")),
+      pos = paste(pos_x, pos_y, sep = "_")
     )
+  # Only interested in these sectors atm
+  sectors_of_interest <- c("middle_top", "right_top", "left_middle", "middle_middle", "right_middle",  "left_bottom", "middle_bottom")
   # Select random gene from each position unless
   # we explicitly selected one
   highlighted_genes_all <- dose_cor_plot_data  %>%
-    # Only interested in these sectors atm
-    filter(
-      pos %in% c("left_middle", "left_bottom", "middle_middle", "right_top", "right_middle", "middle_top", "middle_bottom")
-    ) %>%
+    filter(pos %in% sectors_of_interest) %>%
     group_by(pos) %>%
     slice_sample(n = 1) %>%
     ungroup() %>%
@@ -276,6 +258,20 @@ dose_response_cor_and_curves <- function(df, seed = 42, highlighted_genes = NULL
     ) +
     # coord_cartesian(expand = FALSE) +
     geom_point(aes(size = selected, text = symbol), alpha = 0.8) +
+    geom_text(
+      aes(pos_x, pos_y, label = n),
+      data = ~.x %>%
+        mutate(
+          pos_x = pos_boundaries[as.integer(pos_x)],
+          pos_y = pos_boundaries[as.integer(pos_y) + 1]
+        ) %>%
+        # mutate(across(c(pos_x, pos_y), ~pos_boundaries[as.integer(.x)])) %>%
+        count(pos_x, pos_y),
+      inherit.aes = FALSE,
+      hjust = "left", vjust = "top",
+      nudge_x = 0.03, nudge_y = -0.03,
+      color = "grey50", fontface = "bold", size = 5
+    ) +
     scale_size_manual(
       # values = c("no" = 2, "left_middle" = 3, "left_bottom" = 3, "right_middle" = 3, "right_top" = 3),
       values = c(set_names(rep_len(3, length.out = length(unique(dose_cor_plot_data$pos))), unique(dose_cor_plot_data$pos)), "no" = 2),
@@ -292,8 +288,11 @@ dose_response_cor_and_curves <- function(df, seed = 42, highlighted_genes = NULL
     coord_equal(xlim = c(-1, 1), ylim = c(-1, 1), expand = FALSE) +
     scale_color_identity() +
     guides(color = FALSE) +
+    theme_bw() +
+    theme_bold() +
+    theme(plot.margin = unit(c(0, 0.5, 0, 0.25), "in")) +
     labs(x = "Dose-response correlation DGE", y = "Dose-respose correlation L1000")
-  dose_plots <- df %>%
+  dose_plot <- df %>%
     inner_join(
       dose_cor_plot_data %>%
         filter(selected != "no"),
@@ -302,43 +301,18 @@ dose_response_cor_and_curves <- function(df, seed = 42, highlighted_genes = NULL
     select(symbol, pos, method, data) %>%
     mutate(data = map(data, select, -symbol)) %>%
     unnest(data) %>%
-    group_nest(symbol, pos) %>%
     mutate(
-      plot = map(data, dose_response_curve) %>%
-        map2(symbol, ~.x + labs(title = .y) + theme(aspect.ratio = 0.5))
+      # Bring genes in the order in which they appear in the sectors of the left plot
+      pos = factor(pos, levels = sectors_of_interest),
+      symbol = factor(symbol, levels = unique(symbol[order(pos)]))
     ) %>%
-    {set_names(.[["plot"]], .[["pos"]])}
+    dose_response_curve() +
+    facet_wrap(~symbol, scales = "free_y") +
+    theme_bw() +
+    theme_bold()
   # browser()
-  res <- arrangeGrob(
-    grobs = list(
-      cor_plot +
-        labs(title = "Palbociclib dose-response correlation"),
-      dose_plots[["left_middle"]] +
-        theme(legend.position = "none"),
-      dose_plots[["left_bottom"]] +
-        theme(legend.position = "none"),
-      dose_plots[["right_middle"]],
-      dose_plots[["right_top"]],
-      dose_plots[["middle_top"]] +
-        theme(legend.position = "none"),
-      dose_plots[["middle_middle"]] +
-        theme(legend.position = "none"),
-      dose_plots[["middle_bottom"]]
-    ) %>%
-      map(~.x + theme_bold()) %>%
-      c(
-        list(
-          grid::nullGrob(),
-          grid::nullGrob()
-        )
-      ),
-    layout_matrix = rbind(
-      c(2, 9, 1, 10, 5),
-      c(3, 9, 1, 10, 4),
-      c(6, 9, 7, 10, 8)
-    ),
-    widths = unit(c(4, 0.1, 6, 0.1, 5), "in"),
-    heights = unit(c(3, 3, 3), "in")
+  res <- egg::ggarrange(
+    cor_plot, dose_plot, nrow = 1
   )
   attr(res, "center_gg") <- cor_plot
   res
@@ -351,10 +325,10 @@ palbo_dose_cor <- calculate_dose_response(
 )
 
 picked_genes <- c(
-  "CDC25B", "HACD3", "DUSP4", "CTSD"
+  "CDC25B", "FKBP4", "DUSP4", "CTSD", "HMGCS1", "HIF1A", "TMEM97"
 )
 # For selecting genes
-# attr(palbo_dose_cor_plot, "center_gg") %>% ggplotly()
+# attr(palbo_dose_cor_plot, "center_gg") %>% plotly::ggplotly()
 
 palbo_dose_cor_plot <- dose_response_cor_and_curves(
   palbo_dose_cor, seed = 42, highlighted_genes = picked_genes
@@ -363,8 +337,8 @@ palbo_dose_cor_plot <- dose_response_cor_and_curves(
 grid::grid.draw(palbo_dose_cor_plot)
 
 ggsave(
-  file.path(wd, "palbo_dose_cor_plot.pdf"),
-  palbo_dose_cor_plot, width = 15.5, height = 6
+  file.path(wd, "4A.pdf"),
+  palbo_dose_cor_plot, width = 12, height = 6
 )
 
 palbo_dose_cor_plot_data <- dose_response_pairwise(palbo_dose_cor)
@@ -449,7 +423,33 @@ p <- ggplot(
   )
 ) +
   geom_col() +
+  geom_text(
+    aes(label = name),
+    data = ~.x %>%
+      filter(ordered_lspci_id == paste(filter(compound_names, name == "PALBOCICLIB")$lspci_id, "MCF7", "24")) %>%
+      left_join(
+        select(compound_names, lspci_id, name)
+      ),
+    hjust = "left", vjust = "center", angle = 90,
+    nudge_y = 0.2
+  ) +
+  # geom_text_repel(
+  #   aes(label = name),
+  #   data = ~.x %>%
+  #     left_join(
+  #       select(compound_names, lspci_id, name)
+  #     ) %>%
+  #     mutate(
+  #       name = if_else(
+  #         ordered_lspci_id == paste(filter(compound_names, name == "PALBOCICLIB")$lspci_id, "MCF7", "24"),
+  #         name,
+  #         ""
+  #       )
+  #     ),
+  #   point.padding = 1, box.padding = 1
+  # ) +
   scale_fill_manual(values = c(`TRUE` = "red", `FALSE` = "grey50"), guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
   geom_hline(yintercept = -log10(0.05)) +
   theme_bw() +
   theme_bold() +
@@ -458,8 +458,8 @@ p <- ggplot(
   # coord_cartesian(expand = FALSE)
 
 ggsave(
-  file.path(wd, "all_drugs_correlation_pvalues.pdf"),
+  file.path(wd, "4B.pdf"),
   p,
-  width = 5, height = 3
+  width = 4, height = 2
 )
 
