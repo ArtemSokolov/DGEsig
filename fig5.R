@@ -9,7 +9,7 @@ library(seriation)
 library(qs)
 
 synapser::synLogin()
-syn <- synExtra::synDownloader("data")
+syn <- synExtra::synDownloader("~/data", .cache = TRUE)
 
 wd <- here("fig5")
 dir.create(wd, showWarnings = FALSE)
@@ -40,38 +40,38 @@ compound_names <- syn("syn26260344") %>%
   ungroup()
 
 
-cmap_gene_sets <- syn("syn25314203") %>%
-  qread() %>%
-  as_tibble()
+# cmap_gene_sets <- syn("syn25314203") %>%
+#   qread() %>%
+#   as_tibble()
 
 dge_gene_sets <- syn("syn25303778") %>%
   qread() %>%
   as_tibble()
 
-gene_set_meta <- bind_rows(
-  l1000 = cmap_gene_sets %>%
-    select(
-      cell_aggregate_method, replicate_method,
-      lspci_id, drug_conc = pert_dose, time = pert_time, cells = cell_id,
-      cutoff, gene_set_id
-    ),
-  dge = dge_gene_sets %>%
-    select(
-      concentration_method, replicate_method,
-      lspci_id, drug_conc, cells, stim, stim_conc,
-      time, gene_set_id
-    ),
-  .id = "source"
-) %>%
-  mutate(cells = coalesce(cells, "summary"))
+# gene_set_meta <- bind_rows(
+#   l1000 = cmap_gene_sets %>%
+#     select(
+#       cell_aggregate_method, replicate_method,
+#       lspci_id, drug_conc = pert_dose, time = pert_time, cells = cell_id,
+#       cutoff, gene_set_id
+#     ),
+#   dge = dge_gene_sets %>%
+#     select(
+#       concentration_method, replicate_method,
+#       lspci_id, drug_conc, cells, stim, stim_conc,
+#       time, gene_set_id
+#     ),
+#   .id = "source"
+# ) %>%
+#   mutate(cells = coalesce(cells, "summary"))
 
-x <- inner_join(
-  dge_gene_sets,
-  cmap_gene_sets %>%
-    filter(cell_aggregate_method == "per_cell_line"),
-  by = c("lspci_id", "cells" = "cell_id")
-) %>%
-  distinct(lspci_id, cells)
+# x <- inner_join(
+#   dge_gene_sets,
+#   cmap_gene_sets %>%
+#     filter(cell_aggregate_method == "per_cell_line"),
+#   by = c("lspci_id", "cells" = "cell_id")
+# ) %>%
+#   distinct(lspci_id, cells)
 
 cmap_meta <- syn("syn21547097") %>%
   read_csv(
@@ -83,33 +83,27 @@ cmap_meta <- syn("syn21547097") %>%
     )
   )
 
-sig_meta <- syn("syn21547101") %>%
-  read_csv()
+# sig_meta <- syn("syn21547101") %>%
+#   read_csv()
 
 dge_meta <- syn("syn25292310") %>%
   qread()
-
-x <- inner_join(
-  dge_meta %>%
-    unnest(meta),
-  sig_meta,
-  by = c("lspci_id", "cells" = "cell_id")
-) %>%
-  distinct(lspci_id, cells) %>%
-  drop_na() %>%
-  left_join(
-    compound_names
-  )
-
+#
+# x <- inner_join(
+#   dge_meta %>%
+#     unnest(meta),
+#   sig_meta,
+#   by = c("lspci_id", "cells" = "cell_id")
+# ) %>%
+#   distinct(lspci_id, cells) %>%
+#   drop_na() %>%
+#   left_join(
+#     compound_names
+#   )
+#
 
 pertubation_meta <- syn("syn21547097") %>%
   read_csv()
-
-signature_meta <- syn("syn21547101") %>%
-  read_csv()
-
-# dge_meta <- syn("syn25292310") %>%
-#   qread()
 
 ## Plotting elements
 pal <- rev(RColorBrewer::brewer.pal(n=7, name="RdBu"))
@@ -137,7 +131,8 @@ relevant_gene_sets <- dge_gene_sets %>%
     lspci_id %in% {dge_meta %>%
       unnest(meta) %>%
       filter(
-          !lspci_id %in% cmap_gene_sets$lspci_id,
+          # Only drugs not profiled in CMap
+          !lspci_id %in% pertubation_meta$lspci_id,
           dataset %in% c("sr_repurposing", "ld_dub", "lincs_cdk4_6_7", "okl")
       ) %>%
       pull(lspci_id) %>%
@@ -271,6 +266,7 @@ lvl2 <- R3 %>%
   distinct(name_q, query_group) %>%
   group_by(query_group) %>%
   group_map(
+    # Cluster each group separately
     function(.x, ...) {
       queries <- unique(.x[["name_q"]])
       if (length(queries) == 1)
@@ -293,6 +289,7 @@ lvl2 <- R3 %>%
   }
 
 cell_lines_used_plot_data <- cell_lines_used %>%
+  filter(lspci_id %in% R3$lspci_id) %>%
   bind_rows(
     crossing(
       name_q = setdiff(lvl2, unique(R3[["name_q"]])),
@@ -320,15 +317,18 @@ cell_lines_used_plot <- cell_lines_used_plot_data %>%
     ) +
     # Remove cell borders in empty space between left and right side
     scale_color_manual(
-      values = c("TRUE" = NA_character_, "FALSE" = "black"),
+      values = c("TRUE" = "white", "FALSE" = "black"),
       guide = "none"
     ) +
+    labs(x = "Drug query", fill = "Cell types") +
     # Remove facet labels
+    theme_bold() +
     theme(
       strip.background = element_blank(), strip.text.x = element_blank(),
-      axis.title.x = element_blank(),
+      # axis.title.x = element_blank(),
       axis.text.y = element_blank(), axis.title.y = element_blank(),
       panel.grid = element_blank()
+      # panel.spacing = unit(0.2, "in")
     )
 
 ## Fix the order via factor levels
@@ -346,36 +346,39 @@ R4 <- R3 %>%
       as.character(),
     # recode("2" = "3"),
     name_q = factor(name_q, lvl2),
-    pert_iname = factor(pert_iname, lvl)
+    pert_iname = factor(pert_iname, lvl),
+    empty_cell = str_detect(name_q, "^( )+$")
   )
 
 ## Plotting a heatmap of clue hits
 fplot <- function(X, cell_lines = NULL) {
   ggplot(
     # Arrange just so that cells with border are drawn last for clean rendering
-    X %>% arrange(!str_detect(name_q, "^( )+$")),
+    X %>% arrange(desc(empty_cell)),
     aes(x=name_q,
         y=pert_iname,
         fill=tau)
   )+
     theme_minimal() + theme_bold() +
     geom_tile(
-      aes(color = str_detect(name_q, "^( )+$"))
+      aes(color = empty_cell)
+      # size = 0.5
     ) +
     # Remove cell borders in empty space between left and right side
     scale_color_manual(
-      values = c("TRUE" = NA_character_, "FALSE" = "black"),
+      values = c("TRUE" = "white", "FALSE" = "black"),
       guide = FALSE
     ) +
     scale_fill_gradientn( colors=pal, limits=c(-100,100), na.value = "white" ) +
-    labs(x = "Drug query", y = "Clue target class", fill = "Tau" ) +
-    facet_wrap(~split_group, scales = "free_y") +
+    labs(y = "CMap signature", fill = "Tau" ) +
+    facet_wrap(~split_group, scales = "free_y", nrow = 1) +
     # Remove facet labels
     theme(
       strip.background = element_blank(), strip.text.x = element_blank(),
       panel.grid = element_blank(),
-      axis.text.x = element_blank(), axis.title.x = element_blank(),
-      axis.text.y = element_blank(), axis.title.y = element_blank()
+      axis.text.x = element_blank(), axis.title.x = element_blank()
+      # axis.text.y = element_blank(), axis.title.y = element_blank(),
+      # panel.spacing = unit(0.2, "in")
     )
 }
 
@@ -385,13 +388,14 @@ combined_plot <- plot_grid(
   connectivity_plot,
   cell_lines_used_plot,
   ncol = 1,
-  align = "v", axis = "lr",
-  rel_heights = c(25, 10)
+  align = "v",
+  # axis = "lr",
+  rel_heights = c(25, 11.4)
 )
 
 ggsave(
   file.path(wd, "fig5.pdf"),
   combined_plot,
-  width = 11.5, height = 10
+  width = 11.5, height = 12.3
 )
 
