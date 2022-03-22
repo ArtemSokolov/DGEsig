@@ -3,14 +3,15 @@ library( seriation )   # For optimal leaf reordering
 library(synapser)
 library(here)
 library(qs)
+library(magrittr)
 
-pathData <- "~/data/DGEsig"
+pathData <- "~/data"
 
 wd <- here("fig2")
 dir.create(wd, showWarnings = FALSE)
 
 synapser::synLogin()
-syn <- synExtra::synDownloader(pathData)
+syn <- synExtra::synDownloader(pathData, .cache = TRUE)
 
 rdbu_colormap <- RColorBrewer::brewer.pal(5, "RdBu")
 
@@ -340,14 +341,24 @@ wilcox_self_similarities <- R3 %>%
     )
 
 wilcox_self_similarities %>%
-  filter(is.na(cutoff) | cutoff == 0.7) %>%
-  count(source, significant = p.value < 0.05)
+  count(cutoff, source, significant = p.value < 0.05) %T>%
+  write_csv(file.path(wd, "wilcox_table.csv"))
 
 # 24 out of 32 DGE profiles show significant self-similarity
 
 library(ggbeeswarm)
 
-self_similarity_beeswarm <- R3 %>%
+## Define transform that min-max normalizes data to between 0 and 1
+## and then applies a logistic transformation
+## Useful for plotting symmetrical data emphasizing points at the extreme ends
+## of the distribution
+logit_p_trans <- function(mi, ma) {
+  scales::trans_new("logit_p",
+                    transform = function (x) qlogis((x - mi) / (ma - mi)),
+                    inverse   = function (x) ((ma - mi) * plogis(x)) + mi)
+}
+
+self_similarity_beeswarm_data <- R4 %>%
     filter(is.na(cutoff) | cutoff == 0.7) %>%
     mutate(
         self_similarity = if_else(
@@ -357,7 +368,9 @@ self_similarity_beeswarm <- R3 %>%
         ) %>%
             fct_relevel("cross_similarity")
     ) %>%
-    arrange(self_similarity) %>%
+    arrange(self_similarity)
+
+self_similarity_beeswarm_plot <- self_similarity_beeswarm_data %>%
         ggplot(
             aes(tau, name_q, color = self_similarity)
         ) +
@@ -375,20 +388,16 @@ self_similarity_beeswarm <- R3 %>%
                 cross_similarity = "#00000088"
             ),
             guide = FALSE
-        )
+        ) +
+        scale_x_continuous(trans = logit_p_trans(-101, 101))
+
+ggsave(
+  file.path(wd, "similarity_beeswarm_separate.pdf"),
+  self_similarity_beeswarm_plot, width = 6, height = 9
+)
 
 
-self_similarity_beeswarm_agg <- R2 %>%
-    filter(query_type == "aggregated", is.na(z_score_cutoff) | z_score_cutoff == 0.7) %>%
-    mutate(
-        self_similarity = if_else(
-            idQ == idT,
-            "self_similarity",
-            "cross_similarity"
-        ) %>%
-            fct_relevel("cross_similarity")
-    ) %>%
-    arrange(self_similarity) %>%
+self_similarity_beeswarm_agg_plot <- self_similarity_beeswarm_data %>%
     ggplot(
         aes(source, tau, fill = self_similarity)
     ) +
@@ -416,29 +425,38 @@ self_similarity_beeswarm_agg <- R2 %>%
     ) +
     facet_wrap(~source, scales = "free", ncol = 1) +
     theme_light() +
+    theme_bold() +
     theme(
         strip.background = element_blank(),
         strip.text = element_blank(),
         panel.border = element_blank(),
-        panel.grid.major.x = element_blank()
+        panel.grid.major.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()
     ) +
-    scale_y_continuous(position = "right") +
+    scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
     labs(x = NULL, y = "Tau")
 
 
 ggsave(
-    file.path(wd, "fig2b_self_similarity_beeswarm_agg.pdf"),
-    self_similarity_beeswarm_agg,
+    file.path(wd, "fig2b_self_similarity_beeswarm_agg_logit.pdf"),
+    self_similarity_beeswarm_agg_plot,
     width = 1.5, height = 7.5
 )
 
-self_similarity_stats <- R2 %>%
-    filter(query_type == "aggregated", is.na(z_score_cutoff) | z_score_cutoff == 0.7) %>%
-    group_by(source, idQ, drugQ) %>%
+ggsave(
+  file.path(wd, "fig2b_self_similarity_beeswarm_agg_linear.pdf"),
+  self_similarity_beeswarm_agg_plot +
+    scale_y_continuous(position = "right"),
+  width = 1.5, height = 7.5
+)
+
+self_similarity_stats <- R4 %>%
+    group_by(source, lspci_id_q, name_q, cutoff) %>%
+    arrange(desc(tau)) %>%
     summarize(
-        n_greater = sum(
-            tau[idQ != idT] > tau[idQ == idT]
-        ),
+        rank = seq_len(n())[lspci_id_q == lspci_id_t],
+        rank_percentile = rank / n(),
         .groups = "drop"
     )
 
@@ -602,6 +620,66 @@ ggsave(
 
 
 ## Query by cell-line
+
+
+## Isolate the appropriate slice of data
+## Aggregate across multiple entries to compute master similarity score
+R2 <- gene_set_meta %>%
+  filter(
+    # cell_aggregate_method == "cells_aggregated" | is.na(cell_aggregate_method),
+    # replicate_method == "replicates_aggregated" | is.na(replicate_method),
+    # concentration_method == "concentration_aggregated" | is.na(concentration_method),
+    is.na(stim)
+  ) %>%
+  rename(
+    lspci_id_q = lspci_id, cells_q = cells
+  ) %>%
+  distinct() %>%
+  inner_join(
+    R %>%
+      rename(cells_t = cell_id),
+    by = c("gene_set_id" = "gene_set")
+  ) %>%
+  left_join(
+    cmap_meta %>%
+      distinct(pert_id, lspci_id_t = lspci_id),
+    by = "pert_id"
+  ) %>% {
+    bind_rows(
+      filter(., source == "l1000"),
+      # Actually didn't perform cell aggregation for dge data... need to do here
+      filter(., source == "dge") %>%
+        group_by(source, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_t) %>%
+        summarize(
+          tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
+            {.[order(abs(.))[2]]},
+          .groups = "drop"
+        ) %>%
+        mutate(cell_aggregate_method = "cells_aggregated")
+    )
+  } %>%
+  # For some reason, CMap sometimes returns multiple independent connectivities
+  # of the same query and target compound. Probably replicate signatures
+  # on their side?
+  # Aggregating by taking the 33- or 66-percentile, whichever has
+  # higher absolute value. Approach used by CMap to aggregate cell lines
+  group_by(source, cell_aggregate_method, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_q, cells_t, cutoff) %>%
+  summarize(
+    tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
+      {.[order(abs(.))[2]]},
+    .groups = "drop"
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_q = name),
+    by = c("lspci_id_q" = "lspci_id")
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_t = name),
+    by = c("lspci_id_t" = "lspci_id")
+  )
+
 
 R3 <- R %>% filter(idT %in% names(dmap), idQ %in% names(dmap)) %>%
     select( idQ, idT, tau, source, z_score_cutoff, query_type, cell_id_query ) %>%
