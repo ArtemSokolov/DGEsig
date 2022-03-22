@@ -5,9 +5,11 @@ library(patchwork)
 library(ggbeeswarm)
 library(here)
 library(gt)
+library(qs)
+library(fst)
 
 synapser::synLogin()
-syn <- synExtra::synDownloader("~/data/DGE_comp/")
+syn <- synExtra::synDownloader("~/data", .cache = TRUE)
 
 paste_ <- function(...) {
   paste(..., sep = "_")
@@ -18,11 +20,14 @@ theme_set(theme_light())
 wd <- here("fig1")
 dir.create(wd, showWarning = FALSE)
 
-raw_counts <- syn("syn21544261") %>%
-  read_rds()
+raw_counts <- syn("syn25292308") %>%
+  qread()
 
-meta <- syn("syn22000707") %>%
-  read_rds()
+meta <- syn("syn25292310") %>%
+  qread()
+
+perturbation_meta <- syn("syn21547097") %>%
+  read_csv()
 
 MIN_N_READS_DETECTABLE <- 5
 MIN_N_READS_VALID <- 50000
@@ -52,26 +57,28 @@ dataset_names <- tribble(
   "sr_repurposing", "AD drug repurposing 2", "2018_11",
   "lincs_cdk4_6_7", "CDK4/6 inhibitors 1", "2017_09",
   "lincs_cdk4_6_7", "CDK4/6 inhibitors 2", "2019_08",
-  "fp_transdiff", "2015_10_feodor_price_transdifferentiation_screen", "2015_10"
+  "fp_transdiff", "2015_10_feodor_price_transdifferentiation_screen", "2015_10",
+  "okl", "Optimal Kinase Library", "2021_08"
 ) %>%
   mutate(across(c(dataset_name), fct_inorder))
 
 seq_depth_violin <- sequencing_stats %>%
   filter(!dataset %in% c("fp_transdiff")) %>%
   inner_join(dataset_names, by = c("dataset", "date")) %>%
-  ggplot((aes(x = dataset_name, y = total_counts))) +
-    geom_quasirandom(varwidth = FALSE, width = 0.45, method = "quasirandom") +
-    scale_y_log10() +
-    scale_x_discrete(position = "top") +
-    geom_hline(yintercept = MIN_N_READS_VALID, linetype = "dashed") +
-    labs(x = "", y = "Sequencing depth") +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 0, face = "bold"),
-      axis.text.y = element_text(face = "bold")
-    )
+  mutate(across(dataset_name, fct_rev)) %>%
+  ggplot((aes(x = total_counts, y = dataset_name))) +
+    geom_quasirandom(varwidth = FALSE, width = 0.45, method = "quasirandom", groupOnX = FALSE) +
+    scale_x_log10() +
+    scale_y_discrete(position = "left") +
+    geom_vline(xintercept = MIN_N_READS_VALID, linetype = "dashed") +
+    labs(y = "", x = "Sequencing depth")
+    # theme(
+    #   # axis.text.x = element_text(angle = 45, hjust = 0, face = "bold"),
+    #   # axis.text.y = element_text(face = "bold")
+    # )
 
 ggsave(
-  file.path(wd, "sequencing_depth_violin.png"),
+  file.path(wd, "sequencing_depth_violin.pdf"),
   seq_depth_violin,
   width = 5.5, height = 4.5
 )
@@ -79,21 +86,18 @@ ggsave(
 detectable_genes_violin <- sequencing_stats %>%
   filter(!dataset %in% c("fp_transdiff"), passing) %>%
   inner_join(dataset_names, by = c("dataset", "date")) %>%
-  ggplot((aes(x = dataset_name, y = n_detectable, color = passing))) +
-    geom_quasirandom(varwidth = FALSE, width = 0.45, method = "quasirandom") +
-    scale_y_log10() +
-    scale_x_discrete(position = "top") +
+  mutate(across(dataset_name, fct_rev)) %>%
+  ggplot((aes(x = n_detectable, y = dataset_name, color = passing))) +
+    geom_quasirandom(varwidth = FALSE, width = 0.45, method = "quasirandom", groupOnX = FALSE) +
+    scale_x_log10() +
+    scale_y_discrete(position = "left") +
     scale_color_manual(values = c(`TRUE` = "black", `FALSE` = "red"), guide = FALSE) +
-    # geom_hline(yintercept = MIN_N_READS_VALID, linetype = "dashed") +
-    labs(x = "", y = "N genes with >5 reads") +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 0, face = "bold"),
-      axis.text.y = element_text(face = "bold")
-    )
+    # geom_vline(xintercept = MIN_N_READS_VALID, linetype = "dashed") +
+    labs(y = "", x = "N genes with >5 reads per library")
 
 
 ggsave(
-  file.path(wd, "detectable_genes_violin.png"),
+  file.path(wd, "detectable_genes_violin.pdf"),
   detectable_genes_violin, width = 5.5, height = 4.5
 )
 
@@ -123,7 +127,8 @@ dataset_names <- tribble(
   "lincs_cdk4_6_7", "4) CDK4/6 inhibitors 2 [xx]", "2019_08",
   "sr_repurposing", "5) AD drug repurposing 1 [xx]", "2018_02",
   "sr_repurposing", "6) AD drug repurposing 2 [xx]", "2018_11",
-  "fp_transdiff", "2015_10_feodor_price_transdifferentiation_screen", "2015_10"
+  "fp_transdiff", "2015_10_feodor_price_transdifferentiation_screen", "2015_10",
+  "okl", "7) Optimal Kinase Library [xx]", "2021_08"
 ) %>%
   mutate(across(c(dataset_name), fct_inorder))
 
@@ -147,7 +152,7 @@ meta_table <- meta %>%
   summarize(
     `n samples` = n(),
     `n drugs` = length(unique(na.omit(drug_id))),
-    `n drugs in CMap` = length(intersect(lspci_id, pertubation_meta$lspci_id)),
+    `n drugs in CMap` = length(intersect(lspci_id, perturbation_meta$lspci_id)),
     `n cell lines` = length(unique(cells)),
     .groups = "drop"
   ) %>%
