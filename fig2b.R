@@ -4,6 +4,7 @@ library(synapser)
 library(here)
 library(qs)
 library(magrittr)
+library(data.table)
 
 pathData <- "~/data"
 
@@ -25,9 +26,14 @@ cmap_nonlinear_colormap <- list(
 )
 
 ## Load all results
-R <- syn("syn26468923") %>%
+R_all <- syn("syn26468923") %>%
     # file.path(pathData, "clue_results_combined.rds") %>%
-    qread() %>%
+    qread()
+
+R <- R_all %>%
+  # filter( result_type == "pert", score_level == "cell" ) %>%
+  # pluck( "data", 1 ) %>%
+  # filter(cell_id == "MCF7")
     filter( result_type == "pert", score_level == "summary" ) %>%
     pluck( "data", 1 )
 
@@ -38,12 +44,15 @@ M <- syn("syn25292310") %>%
     qread() %>%
     unnest(meta)
 
-
-cmap_gene_sets <- syn("syn25314203") %>%
+cmap_gene_sets <- syn("syn25314203.4") %>%
   qread()
 
 dge_gene_sets <- syn("syn25303778") %>%
   qread()
+
+R_cmap_mcf7 <- syn("syn30410740") %>%
+  fread() %>%
+  filter(cell_id == "MCF7")
 
 gene_set_meta <- bind_rows(
   l1000 = cmap_gene_sets %>%
@@ -141,6 +150,8 @@ R2 <- gene_set_meta %>%
         summarize(
           tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
             {.[order(abs(.))[2]]},
+          # tau = mean(tau),
+          cells_q = paste(sort(unique(cells_q)), collapse = "_"),
           .groups = "drop"
         ) %>%
         mutate(cell_aggregate_method = "cells_aggregated")
@@ -155,6 +166,7 @@ R2 <- gene_set_meta %>%
   summarize(
       tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
         {.[order(abs(.))[2]]},
+    # tau = mean(tau),
       .groups = "drop"
   ) %>%
   left_join(
@@ -167,6 +179,179 @@ R2 <- gene_set_meta %>%
       rename(name_t = name),
     by = c("lspci_id_t" = "lspci_id")
   )
+
+R2_by_cell <- gene_set_meta %>%
+  filter(
+    # cell_aggregate_method == "per_cell_line" | is.na(cell_aggregate_method),
+    # replicate_method == "replicates_aggregated" | is.na(replicate_method),
+    # concentration_method == "concentration_aggregated" | is.na(concentration_method),
+    cutoff == 0.7 | is.na(cutoff),
+    is.na(stim)
+  ) %>%
+  rename(
+    lspci_id_q = lspci_id, cells_q = cells
+  ) %>%
+  distinct() %>%
+  inner_join(
+    R_all %>%
+      filter( result_type == "pert", score_level == "cell" ) %>%
+      pluck( "data", 1 ) %>%
+      filter(cell_id == "MCF7") %>%
+      rename(cells_t = cell_id),
+    by = c("gene_set_id" = "gene_set")
+  ) %>%
+  left_join(
+    cmap_meta %>%
+      distinct(pert_id, lspci_id_t = lspci_id),
+    by = "pert_id"
+  ) %>%
+  # For some reason, CMap sometimes returns multiple independent connectivities
+  # of the same query and target compound. Probably replicate signatures
+  # on their side?
+  # Aggregating by taking the 33- or 66-percentile, whichever has
+  # higher absolute value. Approach used by CMap to aggregate cell lines
+  group_by(source, cell_aggregate_method, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_q, cells_t, cutoff) %>%
+  summarize(
+    tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
+      {.[order(abs(.))[2]]},
+    # tau = mean(tau),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_q = name),
+    by = c("lspci_id_q" = "lspci_id")
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_t = name),
+    by = c("lspci_id_t" = "lspci_id")
+  )
+
+
+## Isolate the appropriate slice of data
+## Aggregate across multiple entries to compute master similarity score
+R2_mcf7_cmap <- R_cmap_mcf7 %>%
+  mutate(
+    cells_q = "MCF7"
+  ) %>%
+  rename(cells_t = cell_id) %>%
+  select(starts_with("lspci_id"), starts_with("cells"), tau) %>%
+  drop_na(starts_with("lspci_id")) %>%
+  group_by(across(-tau)) %>%
+  summarize(tau = mean(tau), .groups = "drop") %>%
+  left_join(
+    compound_names %>%
+      rename(name_q = name),
+    by = c("lspci_id_q" = "lspci_id")
+  ) %>%
+  left_join(
+    compound_names %>%
+      rename(name_t = name),
+    by = c("lspci_id_t" = "lspci_id")
+  )
+
+cluster_mat <- function(df) {
+  # Start off with data where replicates, cells, and concentrations aggregated and
+  # using a z-threshold of 0.7
+  lspci_id_common <- intersect(df$lspci_id_t, df$lspci_id_q)
+  R3 <- df %>%
+    filter(
+      lspci_id_t %in% lspci_id_common,
+      lspci_id_q %in% lspci_id_common
+    ) %>%
+    mutate(
+      name_q = str_trunc(name_q, 16, ellipsis = "…"),
+      name_t = str_trunc(name_t, 16, ellipsis = "…")
+    )
+
+  ## Perform hierarchical clustering on drugT profiles (columns in the final plot)
+  ## Use the DGE slice because it is cleaner and less saturated
+  R3_mat <- R3 %>% filter(source == "dge") %>% select( name_q, name_t, tau ) %>%
+    # IKK16 slipped through. It was profiled with DGE but
+    # it's signature for whatever reason didn't return results in CMap
+    # (too few genes?). L1000 signature was succesfull
+    filter(name_q != "IKK16", name_t != "IKK16") %>%
+    pivot_wider( names_from = name_t, values_from = tau ) %>%
+    column_to_rownames("name_q") %>% as.matrix()
+  # We want to cluster both rows and cols but want them ordered
+  # identically. Just adding distance matrices of matrix and it's transpose
+  # DM <- R3_mat %>% t() %>% dist()
+  DM <- (R3_mat %>% t() %>% dist()) +
+    R3_mat %>% dist()
+  lvl <- hclust(DM) %>% reorder(DM) %>%  dendextend::order.hclust() %>% labels(DM)[.]
+
+  ## Fix the order via factor levels
+  R4 <- R3 %>% mutate(name_q = factor(name_q, lvl),
+                      name_t = factor(name_t, rev(lvl)))
+
+  # Complete missing observations at z-scores that yielded insufficient
+  # genes for Clue with NA
+  R4_completed <- bind_rows(
+    R4 %>%
+      filter(source == "dge"),
+    R4 %>%
+      filter(source == "l1000") %>%
+      complete(nesting(lspci_id_q, lspci_id_t, name_q, name_t, source), cutoff)
+  ) %>%
+    # IKK16 slipped through. It was profiled with DGE but
+    # it's signature for whatever reason didn't return results in CMap
+    # (too few genes?). L1000 signature was succesfull
+    filter(name_q != "IKK16", name_t != "IKK16")
+  R4_completed
+}
+
+R4_neuro <- R2_by_cell %>%
+  filter(cells_q == "rencell") %>%
+  cluster_mat()
+
+p_neuro_query <- fplot(R4_neuro)
+ggsave(
+  "fig2_neuro_query.pdf", p_neuro_query, width = 8, height = 7
+)
+
+R4_mcf7 <- R2_by_cell %>%
+  filter(cells_q == "MCF7") %>%
+  cluster_mat()
+
+p_mcf7_query <- fplot(R4_mcf7)
+ggsave(
+  "fig2_mcf7_query.pdf", p_mcf7_query, width = 7, height = 6
+)
+
+R4_mcf7_cmap <- R2_mcf7_cmap %>%
+  # just a workaround it's actually l1000
+  mutate(source = "dge", cutoff = 0.7) %>%
+  cluster_mat()
+
+p_mcf7_cmap <- fplot(R4_mcf7_cmap)
+ggsave(
+  "fig2_mcf7_cmap_query.pdf", p_mcf7_cmap, width = 14, height = 12
+)
+
+neuro_mcf7_overlap <- intersect(
+  R2_by_cell %>%
+    filter(cells_q == "MCF7") %>%
+    pull(lspci_id_q),
+  R2_by_cell %>%
+    filter(cells_q == "rencell") %>%
+    pull(lspci_id_q)
+)
+R4_neuro_both <- R2_by_cell %>%
+  filter(cells_q == "rencell", lspci_id_q %in% neuro_mcf7_overlap) %>%
+  cluster_mat()
+p_neuro_query_both <- fplot(R4_neuro_both)
+ggsave(
+  "fig2_neuro_query_both.pdf", p_neuro_query_both, width = 6, height = 5
+)
+R4_mcf7_both <- R2_by_cell %>%
+  filter(cells_q == "MCF7", lspci_id_q %in% neuro_mcf7_overlap) %>%
+  cluster_mat()
+
+p_mcf7_query_both <- fplot(R4_mcf7_both)
+ggsave(
+  "fig2_mcf7_query_both.pdf", p_mcf7_query_both, width = 6, height = 5
+)
 
 # Start off with data where replicates, cells, and concentrations aggregated and
 # using a z-threshold of 0.7
@@ -211,7 +396,7 @@ R4_completed <- bind_rows(
         filter(source == "dge"),
     R4 %>%
         filter(source == "l1000") %>%
-        complete(nesting(name_q, name_t, source), cutoff)
+        complete(nesting(lspci_id_q, lspci_id_t, name_q, name_t, source), cutoff)
 ) %>%
   # IKK16 slipped through. It was profiled with DGE but
   # it's signature for whatever reason didn't return results in CMap
@@ -243,6 +428,7 @@ composite_plot <- function(X) {
     ## DGE plot
     gg1 <- fplot( filter(X, source == "dge") ) +
         scale_x_discrete(position = "top") +
+      # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
         theme(axis.title.x = element_blank(),
               axis.text.x = element_text(hjust=0, vjust=0.5),
               plot.margin = margin(r = 0.25, l = 0.25, unit = "in")) +
@@ -251,7 +437,7 @@ composite_plot <- function(X) {
     ## L1000 plot
     gg2 <- fplot( filter(X, source == "l1000") ) +
         ylab( "L1000 Query" ) +
-        scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
+        # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
         # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100)) +
         theme(legend.position = "bottom",
               plot.margin = margin(r = 0.25, l = 0.25, unit = "in"))
@@ -293,6 +479,13 @@ composite_plot <- function(X) {
     egg::ggarrange( gg1, ggs, gg2, heights=c(7.5,0.5,7.5), widths = c(7), draw=FALSE )
 }
 
+write_csv(
+  R4, file.path(wd, "2b_data.csv")
+)
+
+
+
+
 ggcomp <- R4_completed %>%
     filter( source == "l1000" ) %>%
     group_nest( cutoff ) %>%
@@ -306,7 +499,7 @@ ggcomp <- R4_completed %>%
     )
 
 ggsave(
-  "fig2.pdf",
+  "fig2_summary_target_mean_query.pdf",
   ggcomp$data[[1]], width = 10, height = 18
 )
 
@@ -317,7 +510,7 @@ ggsave(
         walk(
           file.path(
             wd,
-            paste0("fig2_", cutoff, c(".png", ".pdf"))
+            paste0("fig2_mcf7_target_", cutoff, c(".png", ".pdf"))
           ),
           ggsave, data, width=10, height=18 )
     }
@@ -817,3 +1010,106 @@ pwalk(
         )
     }
 )
+
+
+## Plot two matrix halfs against each other
+
+halfs_data <- R4 %>%
+  filter(name_q != name_t) %>%
+  mutate(
+    direction = if_else(lspci_id_q > lspci_id_t, "forward", "reverse"),
+    across(c(name_q, name_t), as.character),
+    names = map2(name_q, name_t, c) %>%
+      map(sort),
+    name_1 = map_chr(names, 1),
+    name_2 = map_chr(names, 2),
+    comp = names %>%
+      map_chr(paste, collapse = "_")
+  ) %>%
+  select(source, cutoff, direction, name_1, name_2, comp, cells_q, tau) %>%
+  pivot_wider(names_from = direction, values_from = c(cells_q, tau)) %>%
+  mutate(
+    same_cells = if_else(cells_q_forward == cells_q_reverse, "same", "different")
+  )
+
+outliers <- halfs_data %>%
+  filter(is.na(cutoff) | cutoff == 0.7) %>%
+  mutate(source = fct_recode(source, `DGE query` = "dge", `L1000 query` = "l1000")) %>%
+  filter(
+    abs(tau_reverse - tau_forward) > 180
+  )
+
+halfs_data %>%
+  filter(is.na(cutoff) | cutoff == 0.7) %>%
+  mutate(source = fct_recode(source, `DGE query` = "dge", `L1000 query` = "l1000")) %>%
+  mutate(
+    outlier = abs(tau_reverse - tau_forward) > 180
+  ) %>%
+  group_by(
+    outlier
+  ) %>%
+  summarize(prop_same_cells = sum(same_cells == "same") / n())
+
+library(GGally)
+
+halfs_data %>%
+  filter(is.na(cutoff) | cutoff == 0.7) %>%
+  mutate(source = fct_recode(source, `DGE query` = "dge", `L1000 query` = "l1000")) %>%
+  mutate(
+    outlier = if_else(abs(tau_reverse - tau_forward) > 180, "disconcordant", "concordant") %>%
+      as.factor()
+  ) %>%
+  ggplot(
+    aes(outlier, fill = same_cells, by = outlier)
+  ) +
+  geom_bar(position = "fill") +
+  geom_text(stat = "prop", position = position_fill(0.5))+
+  theme_minimal() +
+  theme(axis.title.x = element_blank()) +
+  labs(fill = "Query cell types")
+
+ggsave(file.path(wd, "concordant_forward_reverse_same_cell_bar.pdf"), width = 4, height = 4)
+
+# # A tibble: 2 × 2
+# outlier prop_same_cells
+# <lgl>             <dbl>
+#   1 FALSE             0.710
+# 2 TRUE              0.303
+
+library(ggrepel)
+p <- ggplot(
+  halfs_data %>%
+    filter(is.na(cutoff) | cutoff == 0.7) %>%
+    mutate(source = fct_recode(source, `DGE query` = "dge", `L1000 query` = "l1000")) %>%
+    arrange(same_cells),
+  aes(tau_forward, tau_reverse, color = same_cells)
+) +
+  geom_point(alpha = 0.8, shape = 16) +
+  # facet_grid(vars(source), vars(same_cells)) +
+  facet_wrap(~source) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1") +
+  # geom_text_repel(
+  #   aes(label = comp),
+  #   data = ~.x %>%
+  #     mutate(
+  #       comp = if_else(abs(reverse - forward) > 180, comp, "")
+  #     ),
+  #     # filter(),
+  #   max.overlaps = 1000
+  # ) +
+  labs(
+    x = "Connectivity Query X Target Y", y = "Connectivity Query Y Target X",
+    color = "Query cell types"
+  )
+  # lims(x = c(-130, 130), y = c(-130, 130))
+
+ggsave(
+  file.path(wd, "query_reciprocal_scatter.pdf"), p,
+  width = 8, height = 4
+)
+
+# outliers <- halfs_data %>%
+#   filter(
+#     abs(reverse - forward) > 180
+#   )
