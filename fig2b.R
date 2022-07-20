@@ -6,7 +6,7 @@ library(qs)
 library(magrittr)
 library(data.table)
 
-pathData <- "~/data"
+pathData <- "data"
 
 wd <- here("fig2")
 dir.create(wd, showWarnings = FALSE)
@@ -100,6 +100,12 @@ M_cell_info <- bind_rows(
 ) %>%
   distinct()
 
+
+gene_sets_with_cmap_results <- gene_set_meta %>%
+  filter(
+    gene_set_id %in% R_all$data[[4]]$gene_set
+  )
+
 # pertubation_meta <- syn("syn21547097") %>%
 #     read_csv()
 
@@ -107,8 +113,21 @@ M_cell_info <- bind_rows(
 #     read_csv()
 
 ## Identify the common set of drugs between DGE-query, L1000-query and targets
-cmap_returned <- filter(cmap_meta, pert_id %in% R$pert_id)$lspci_id %>% unique()
-dge_queried <- filter(dge_gene_sets, gene_set_id %in% R$gene_set)$lspci_id %>% unique()
+cmap_returned <- filter(cmap_meta, pert_id %in% R$pert_id)$lspci_id %>%
+  unique() %>%
+  na.omit()
+
+
+dge_queried <- filter(
+  dge_gene_sets,
+  gene_set_id %in% R$gene_set,
+  concentration_method == "concentration_aggregated",
+  replicate_method == "replicates_aggregated",
+  is.na(stim)
+)$lspci_id %>%
+  unique() %>%
+  na.omit()
+
 qcom <- intersect(cmap_returned, dge_queried) %>%
   na.omit()
 
@@ -181,6 +200,7 @@ R2 <- gene_set_meta %>%
   )
 
 R2_by_cell <- gene_set_meta %>%
+  drop_na(lspci_id) %>%
   filter(
     # cell_aggregate_method == "per_cell_line" | is.na(cell_aggregate_method),
     # replicate_method == "replicates_aggregated" | is.na(replicate_method),
@@ -305,28 +325,58 @@ R4_neuro <- R2_by_cell %>%
   filter(cells_q == "rencell") %>%
   cluster_mat()
 
-p_neuro_query <- fplot(R4_neuro)
+p_neuro_query <- fplot(R4_neuro) +
+  labs(x = "CMap signature", y = "DGE query")
+
 ggsave(
-  "fig2_neuro_query.pdf", p_neuro_query, width = 8, height = 7
+  "fig2_neuro_query.pdf", p_neuro_query, width = 7, height = 7
 )
+
+R4_neuro_query_cmap_mcf7 <- R2_mcf7_cmap %>%
+  semi_join(
+    R4_neuro, by = c("lspci_id_q", "lspci_id_t")
+  ) %>%
+  # just a workaround so that the function chooches it's actually l1000
+  mutate(source = "dge", cutoff = 0.7) %>%
+  cluster_mat() %>% {
+    levels(.$name_q) <- levels(R4_neuro$name_q)
+    levels(.$name_t) <- levels(R4_neuro$name_t)
+    .
+  }
+
+p_neuro_query_cmap_mcf7 <- fplot(R4_neuro_query_cmap_mcf7) +
+  labs(x = "CMap signature", y = "L1000 query")
+ggsave(
+  "fig2_neuro_query_cmap_mcf7.pdf", p_neuro_query_cmap_mcf7, width = 7, height = 7
+)
+
 
 R4_mcf7 <- R2_by_cell %>%
   filter(cells_q == "MCF7") %>%
   cluster_mat()
 
-p_mcf7_query <- fplot(R4_mcf7)
+p_mcf7_query <- fplot(R4_mcf7) +
+  labs(x = "CMap signature", y = "DGE query")
 ggsave(
-  "fig2_mcf7_query.pdf", p_mcf7_query, width = 7, height = 6
+  "fig2_mcf7_query.pdf", p_mcf7_query, width = 6, height = 6
 )
 
 R4_mcf7_cmap <- R2_mcf7_cmap %>%
-  # just a workaround it's actually l1000
+  semi_join(
+    R4_mcf7, by = c("lspci_id_q", "lspci_id_t")
+  ) %>%
+  # just a workaround so that the function chooches it's actually l1000
   mutate(source = "dge", cutoff = 0.7) %>%
-  cluster_mat()
+  cluster_mat() %>% {
+    levels(.$name_q) <- union(intersect(levels(R4_mcf7$name_q), levels(.$name_q)), levels(.$name_q))
+    levels(.$name_t) <- union(intersect(levels(R4_mcf7$name_t), levels(.$name_t)), levels(.$name_t))
+    .
+  }
 
-p_mcf7_cmap <- fplot(R4_mcf7_cmap)
+p_mcf7_cmap <- fplot(R4_mcf7_cmap) +
+  labs(x = "CMap signature", y = "L1000 query")
 ggsave(
-  "fig2_mcf7_cmap_query.pdf", p_mcf7_cmap, width = 14, height = 12
+  "fig2_mcf7_cmap_query.pdf", p_mcf7_cmap, width = 6, height = 6
 )
 
 neuro_mcf7_overlap <- intersect(
@@ -353,6 +403,58 @@ ggsave(
   "fig2_mcf7_query_both.pdf", p_mcf7_query_both, width = 6, height = 5
 )
 
+# Beeswarm plots for all
+beeswarm_plots <- tribble(
+  ~name, ~data,
+  "neuro_query", R4_neuro,
+  "neuro_query_cmap_mcf7", R4_neuro_query_cmap_mcf7,
+  "mcf7_query", R4_mcf7,
+  "mcf7_query_cmap_mcf7", R4_mcf7_cmap
+) %>%
+  mutate(
+    plot = map(
+      data,
+      ~.x %>%
+        filter(
+          lspci_id_q != lspci_id_t
+        ) %>%
+        ggplot(
+          aes(1, tau)
+        ) +
+        geom_quasirandom(
+          # shape = 21,
+          # size = 1,
+          # # color = "NA",
+          # method = "quasirandom",
+          # bandwidth = 0.2,
+          # width = 0.5
+        ) +
+        theme_light() +
+        theme_bold() +
+        theme(
+          strip.background = element_blank(),
+          strip.text = element_blank(),
+          panel.border = element_blank(),
+          panel.grid.major.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank()
+        ) +
+        # scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
+        labs(x = NULL, y = "Tau")
+    )
+  )
+
+pwalk(
+  beeswarm_plots,
+  function(name, plot, ...) {
+    ggsave(
+      file.path(wd, paste0(name, "_beeswarm.pdf")),
+      plot, width = 2, height = 5
+    )
+  }
+)
+
+
 # Start off with data where replicates, cells, and concentrations aggregated and
 # using a z-threshold of 0.7
 R3 <- R2 %>%
@@ -375,14 +477,14 @@ R3_mat <- R3 %>% filter(source == "dge") %>% select( name_q, name_t, tau ) %>%
   # IKK16 slipped through. It was profiled with DGE but
   # it's signature for whatever reason didn't return results in CMap
   # (too few genes?). L1000 signature was succesfull
-  filter(name_q != "IKK16", name_t != "IKK16") %>%
+  # filter(name_q != "IKK16", name_t != "IKK16") %>%
   pivot_wider( names_from = name_t, values_from = tau ) %>%
   column_to_rownames("name_q") %>% as.matrix()
 # We want to cluster both rows and cols but want them ordered
 # identically. Just adding distance matrices of matrix and it's transpose
 # DM <- R3_mat %>% t() %>% dist()
 DM <- (R3_mat %>% t() %>% dist()) +
-  R3_mat %>% dist()
+  (R3_mat %>% dist())
 lvl <- hclust(DM) %>% reorder(DM) %>%  dendextend::order.hclust() %>% labels(DM)[.]
 
 ## Fix the order via factor levels
