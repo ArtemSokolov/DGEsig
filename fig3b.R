@@ -7,23 +7,14 @@ library(data.table)
 
 synLogin()
 
-syn <- synExtra::synDownloader("~/data/DGE_comp/")
+# syn <- synExtra::synDownloader("~/data", .cache = TRUE)
+syn <- synExtra::synDownloader("data", .cache = TRUE)
 
 dge_gene_sets <- syn("syn25303778") %>%
   qread()
 
-cmap_gene_sets <- syn("syn25314203") %>%
+cmap_gene_sets <- syn("syn27768305") %>%
   qread()
-
-bulk_gene_sets <- syn("syn23554368") %>%
-  read_rds() %>%
-  rowwise() %>%
-  mutate(
-    gene_set_table = deseq %>%
-      filter(padj < 0.2) %>%
-      list()
-  ) %>%
-  ungroup()
 
 cmap_perturbation_meta <- syn("syn21547097") %>%
   read_csv(
@@ -38,10 +29,22 @@ cmap_perturbation_meta <- syn("syn21547097") %>%
 cmap_signature_meta <- syn("syn21547101") %>%
   fread()
 
-lspci_id_name_map <- syn("syn22035396") %>%
-  read_rds() %>%
-  filter(fp_name == "morgan_normal") %>%
-  chuck("data", 1L)
+cmap_gene_meta <- syn("syn21547102") %>%
+  fread()
+
+compound_names <- syn("syn26260344") %>%
+  read_csv() %>%
+  select(lspci_id, name) %>%
+  drop_na() %>%
+  bind_rows(
+    anti_join(cmap_perturbation_meta, ., by = "lspci_id") %>%
+      select(name = pert_iname, lspci_id) %>%
+      drop_na(name)
+  ) %>%
+  group_by(lspci_id) %>%
+  slice(1) %>%
+  ungroup()
+
 
 gene_set_comparison <- dge_gene_sets %>%
   filter(
@@ -56,7 +59,7 @@ gene_set_comparison <- dge_gene_sets %>%
     replicate = as.factor(paste(dataset, time, replicate, sep = "_")),
     time,
     gene_set = gene_set_table %>%
-      map(select, direction, entrezgene_id)
+      map(~transmute(.x, direction, score=-log10(padj), entrezgene_id))
   ) %>%
   bind_rows(
     cmap_gene_sets %>%
@@ -65,10 +68,12 @@ gene_set_comparison <- dge_gene_sets %>%
         cell_aggregate_method == "per_cell_line",
         cutoff == 0.7
       ) %>%
+      chuck("data", 1) %>%
       transmute(
         technique = "l1000", lspci_id, cells = cell_id, replicate,
         gene_set = as.list(gene_set_table) %>%
-          map(select, direction, entrezgene_id)
+          map(merge, select(cmap_gene_meta, pr_gene_id, entrezgene_id = entrez_id), by = "pr_gene_id") %>%
+          map(~transmute(.x, direction, score = abs(zscore), entrezgene_id))
       ) %>%
       inner_join(
         cmap_signature_meta %>%
@@ -87,14 +92,14 @@ gene_set_comparison <- dge_gene_sets %>%
 gene_set_comparison_venn_data <- gene_set_comparison %>%
   mutate(across(cells, str_to_upper)) %>%
   # mutate(gene_set = map(gene_set, group_nest, direction, .key = "gene_set")) %>%
-  unnest(gene_set) %>%
-  nest(gene_set = c(direction, entrezgene_id)) %>%
-  arrange(lspci_id, cells) %>%
+  # unnest(gene_set) %>%
+  # nest(gene_set = c(direction, score, entrezgene_id)) %>%
   group_by(lspci_id, cells) %>%
   filter(n() > 1) %>%
   summarize(
     # venn = cur_data() %>%
     venn_data = cur_data() %>%
+      mutate(across(gene_set, map, arrange, desc(score))) %>%
       list(),
     .groups = "drop"
   )
@@ -118,8 +123,7 @@ make_upset <- function(df, ...) {
       values_from = dummy,
       values_fill = FALSE
     ) %>%
-    select(-entrezgene_id) %>%
-    as.data.frame() %>%
+    select(-entrezgene_id)
     # UpSetR::upset(
     #   nsets = ncol(.),
     #   keep.order = FALSE,
@@ -127,9 +131,9 @@ make_upset <- function(df, ...) {
     #   group.by = "degree",
     #   ...
     # )
-    ComplexUpset::upset(intersect = colnames(.), ...)
 }
 
+set.seed(3)
 gene_set_comparison_upset_data <- gene_set_comparison_venn_data %>%
   left_join(
     cmap_perturbation_meta %>%
@@ -137,7 +141,32 @@ gene_set_comparison_upset_data <- gene_set_comparison_venn_data %>%
       drop_na(),
     by = "lspci_id"
   ) %>%
-  filter(map_lgl(venn_data, ~length(unique(.x[["technique"]])) >= 2))
+  filter(
+    map_lgl(venn_data, ~{tbl <- table(.x[["technique"]]); length(tbl) >= 2 && all(tbl >= 2)})
+  ) %>%
+  mutate(
+    # Selecting 5 random L1000 samples at 24h
+    venn_data = map(
+      venn_data,
+      ~.x %>%
+        group_by(technique) %>%
+        filter(
+          if (technique[1] == "dge")
+            TRUE
+          else {
+            time == 24
+          }
+        ) %>%
+        filter(
+          if (technique[1] == "dge")
+            TRUE
+          else {
+            seq_len(n()) %in% sample(seq_len(n()), 5)
+          }
+        )
+    ),
+    upset_data = map(venn_data, make_upset)
+  )
 
 all_combn <- function(x) {
   map(
@@ -151,45 +180,48 @@ gene_set_comparison_upset <- gene_set_comparison_upset_data %>%
   # head(n = 3) %>%
   mutate(
     venn = map(
-      venn_data,
+      upset_data,
       ~{
         # browser()
-        make_upset(
+        ComplexUpset::upset(
           .x,
+          intersect = colnames(.x),
           n_intersections = 30,
           base_annotations = list(
             'Intersection size' = ComplexUpset::intersection_size()
             # 'Intersection ratio' = ComplexUpset::intersection_ratio()
           ),
-          queries = c(
-            map(
-              filter(.x, str_starts(name, "DGE")) %>%
-                pull(name) %>%
-                all_combn(),
-              ~{
-                # browser()
-                ComplexUpset::upset_query(
-                  intersect = as.character(.x),
-                  only_components = "intersections_matrix",
-                  color = "cornflowerblue",
-                  fill = "cornflowerblue"
-                )
-              }
-            ),
-            map(
-              filter(.x, str_starts(name, "L1000")) %>%
-                pull(name) %>%
-                all_combn(),
-              ~ComplexUpset::upset_query(
-                intersect = as.character(.x),
-                only_components = "intersections_matrix",
-                color = "orangered",
-                fill = "orangered"
-              )
-            )
-          ),
+          # queries = c(
+          #   map(
+          #     filter(.x, str_starts(name, "DGE")) %>%
+          #       pull(name) %>%
+          #       all_combn(),
+          #     ~{
+          #       # browser()
+          #       ComplexUpset::upset_query(
+          #         intersect = as.character(.x),
+          #         only_components = "intersections_matrix",
+          #         color = "cornflowerblue",
+          #         fill = "cornflowerblue"
+          #       )
+          #     }
+          #   ),
+          #   map(
+          #     filter(.x, str_starts(name, "L1000")) %>%
+          #       pull(name) %>%
+          #       all_combn(),
+          #     ~ComplexUpset::upset_query(
+          #       intersect = as.character(.x),
+          #       only_components = "intersections_matrix",
+          #       color = "orangered",
+          #       fill = "orangered"
+          #     )
+          #   )
+          # ),
           set_sizes = FALSE,
-          sort_sets = FALSE
+          sort_sets = FALSE,
+          min_degree = 2,
+          height_ratio = 2
         )
       }
     )
@@ -200,8 +232,45 @@ pwalk(
   function(pert_iname, venn, cells, ...) {
     withr::with_pdf(
       paste0("fig3b_upset_de_genes_", pert_iname, "_", cells, ".pdf"),
-      width = 12, height = 6,
+      width = 12, height = 4,
       print(venn)
     )
   }
 )
+
+single_set_pie_charts <- gene_set_comparison_upset %>%
+  mutate(
+    pie = map(
+      upset_data,
+      function(x) {
+        single_set <- x %>%
+          as.matrix() %>%
+          rowSums() %>%
+          magrittr::is_greater_than(1)
+        df <- data.frame(
+          group = c("Single gene set", "Multiple gene sets"),
+          value = c(sum(!single_set), sum(single_set))
+        ) %>%
+          arrange(desc(group)) %>%
+          mutate(prop = value / sum(value)) %>%
+          mutate(ypos = cumsum(value)- 0.5*value )
+        ggplot(df, aes(x="", y=value, fill=group)) +
+          geom_bar(stat="identity", width=1, color="white") +
+          coord_polar("y", start=0) +
+          labs(fill = "") +
+          geom_text(aes(y = ypos, label = scales::percent(prop, 1)), color = "white", size=6) +
+          theme_void() # remove background, grid, numeric labels
+      }
+    )
+  )
+
+pwalk(
+  single_set_pie_charts,
+  function(pert_iname, pie, cells, ...) {
+    ggsave(
+      paste0("fig3b_single_set_pie_", pert_iname, "_", cells, ".pdf"),
+      pie, width = 3, height = 2.5
+    )
+  }
+)
+
