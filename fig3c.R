@@ -6,7 +6,7 @@ library(qs)
 library(ggbeeswarm)
 library(ggrepel)
 
-pathData <- "~/data/DGEsig"
+pathData <- "~/data"
 
 wd <- here("fig2")
 dir.create(wd, showWarnings = FALSE)
@@ -29,6 +29,14 @@ cmap_nonlinear_colormap <- list(
 R <- syn("syn26468923") %>%
   qread()
 
+R_cells <- R %>%
+  filter(result_type == "pert", score_level == "cell") %>%
+  chuck("data", 1) %>%
+  left_join(
+    cmap_meta %>%
+      distinct(lspci_id, pert_id)
+  )
+
 condition_conc_vars <- c("cells", "drug_id", "lspci_id", "stim", "stim_conc", "time")
 
 M <- syn("syn25292310") %>%
@@ -37,7 +45,7 @@ M <- syn("syn25292310") %>%
   unnest(meta)
 
 
-cmap_gene_sets <- syn("syn25314203") %>%
+cmap_gene_sets <- syn("syn25314203.4") %>%
   qread()
 
 dge_gene_sets <- syn("syn25303778") %>%
@@ -95,22 +103,17 @@ M_cell_info <- bind_rows(
 # pertubation_meta <- syn("syn21547097.6") %>%
 #     read_csv()
 
+
+
 ## Identify the common set of drugs between DGE-query, L1000-query and targets
-cmap_returned <- filter(cmap_meta, pert_id %in% R$pert_id)$lspci_id %>% unique()
-dge_queried <- filter(dge_gene_sets, gene_set_id %in% R$gene_set)$lspci_id %>% unique()
+cmap_returned <- filter(cmap_meta, pert_id %in% R_cells$pert_id)$lspci_id %>% unique()
+dge_queried <- filter(dge_gene_sets, gene_set_id %in% R_cells$gene_set)$lspci_id %>% unique()
 qcom <- intersect(cmap_returned, dge_queried) %>%
   na.omit()
 
 ## Identify overlap in cell line and perturbation between DGE query gene sets
 ## and targets returned by CMap
 
-R_cells <- R %>%
-  filter(score_type == "tau", result_type == "pert", score_level == "cell") %>%
-  chuck("data", 1) %>%
-  left_join(
-    cmap_meta %>%
-      distinct(lspci_id, pert_id)
-  )
 
 # overlapping_gene_sets <- R_cells %>%
 #   semi_join(
@@ -312,7 +315,7 @@ r <- R_plotting %>%
   unnest(res)
 
 # ggplot(R_plotting, aes(x = tau/2, y = name, color = Tissue)) +
-p <- ggplot(R_plotting, aes(x = tau, y = name, color = cells_target == "MCF-7")) +
+p <- ggplot(R_plotting, aes(x = tau, y = name, color = if_else(cells_target == "MCF-7", "MCF-7", "other cell lines"))) +
   geom_quasirandom(groupOnX = FALSE, width = 0.2, data = ~filter(.x, cells_target != "MCF-7")) +
   geom_point(data = ~filter(.x, cells_target == "MCF-7"), size = 2) +
   # geom_text(
@@ -321,8 +324,10 @@ p <- ggplot(R_plotting, aes(x = tau, y = name, color = cells_target == "MCF-7"))
   #   hjust = 0,
   #   inherit.aes = FALSE
   # ) +
-  scale_color_manual(values = c(`FALSE` = "black", `TRUE` = "red")) +
-  guides(color = "none") +
+  scale_color_manual(
+    values = c(`other cell lines` = "black", `MCF-7` = "red")
+  ) +
+  # guides(color = "none") +
   scale_x_continuous(limits = c(-100, 100), trans = logit_p_trans(-101, 101)) +
   facet_grid(rows = vars(name), scales = "free") +
   theme_bw() +
@@ -332,9 +337,10 @@ p <- ggplot(R_plotting, aes(x = tau, y = name, color = cells_target == "MCF-7"))
     panel.grid.major.y = element_blank(),
     panel.grid.minor.y = element_blank(),
     panel.spacing = unit(0, "pt"),
-    plot.margin = unit(c(8, 0, 8, 8), "pt")
+    plot.margin = unit(c(8, 0, 8, 8), "pt"),
+    legend.position = "top"
   ) +
-  labs(y = "3' DGE Query Signature", x = "Tau")
+  labs(y = "3' DGE Query Signature", x = "Tau", color = NULL)
   # egg::ggarrange(
   #   geom_text(
   #     aes(x = -100, y = name, label = signif(p.value, 2), fontface = if_else(p.value < 0.05, "bold", "plain")),
