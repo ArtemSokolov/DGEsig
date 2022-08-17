@@ -58,37 +58,39 @@ compound_names <- syn("syn26260344") %>%
   slice(1) %>%
   ungroup()
 
+#
+# dge_all_compounds <- meta %>%
+#   filter(dataset != "fp_transdiff") %>%
+#   unnest(meta) %>%
+#   filter(
+#     # Don't want this cell line from Laura
+#     !cells %in% c("MDAMB231"),
+#     # Only unstimulated
+#     is.na(stim),
+#     # In CDK dataset, only use the four CDK4/6 inhibs, not CDK7
+#     if_else(
+#       dataset == "lincs_cdk4_6_7",
+#       lspci_id %in% c(
+#         89588, 91464, 78621, 94539
+#       ) | drug == "control",
+#       TRUE
+#     )
+#   ) %>%
+#   distinct(dataset, lspci_id) %>%
+#   drop_na() %>%
+#   left_join(
+#     compound_names
+#   )
 
-dge_all_compounds <- meta %>%
-  filter(dataset != "fp_transdiff") %>%
-  unnest(meta) %>%
-  filter(
-    # Don't want this cell line from Laura
-    !cells %in% c("MDAMB231"),
-    # In CDK dataset, only use the four CDK4/6 inhibs, not CDK7
-    if_else(
-      dataset == "lincs_cdk4_6_7",
-      lspci_id %in% c(
-        89588, 91464, 78621, 94539
-      ) | drug == "control",
-      TRUE
-    )
-  ) %>%
-  distinct(dataset, lspci_id) %>%
-  drop_na() %>%
-  left_join(
-    compound_names
-  )
-
-good_dge_sets <- dge_gene_sets %>%
-  filter(concentration_method == "concentration_aggregated", replicate_method == "replicates_aggregated") %>%
-  unnest(gene_set_table) %>%
-  filter(padj < 0.1) %>%
-  group_by(lspci_id) %>%
-  filter(
-    if(sum(direction == "up") >= 10 && sum(direction == "down") >= 10) TRUE else FALSE
-  ) %>%
-  ungroup()
+# good_dge_sets <- dge_gene_sets %>%
+#   filter(concentration_method == "concentration_aggregated", replicate_method == "replicates_aggregated") %>%
+#   unnest(gene_set_table) %>%
+#   filter(padj < 0.1) %>%
+#   group_by(lspci_id) %>%
+#   filter(
+#     if(sum(direction == "up") >= 10 && sum(direction == "down") >= 10) TRUE else FALSE
+#   ) %>%
+#   ungroup()
 
 clue_res_all <- syn("syn26468923") %>%
   qread()
@@ -101,9 +103,29 @@ clue_res_summary <- clue_res_all %>%
   chuck("data", 1) %>%
   left_join(
     perturbation_meta %>%
-      distinct(pert_id, lspci_id),
+      distinct(pert_id, lspci_id_t = lspci_id),
     by = "pert_id"
+  ) %>%
+  left_join(
+    bind_rows(
+      dge_gene_sets %>%
+        select(gene_set_id, lspci_id_q = lspci_id),
+      cmap_gene_sets %>%
+        select(gene_set_id, lspci_id_q = lspci_id)
+    ) %>%
+      drop_na() %>%
+      distinct(),
+    by = c("gene_set" = "gene_set_id")
   )
+
+
+dge_gene_sets_queried <- dge_gene_sets %>%
+  filter(
+    is.na(stim),
+    gene_set_id %in% clue_res_summary$gene_set
+  ) %>%
+  distinct(lspci_id) %>%
+  drop_na()
 
 
 upset_data <- meta %>%
@@ -132,7 +154,7 @@ upset_data <- meta %>%
     by = "lspci_id"
   ) %>%
   left_join(
-    good_dge_sets %>%
+    dge_gene_sets_queried %>%
       distinct(lspci_id) %>%
       drop_na() %>%
       mutate(
@@ -142,10 +164,10 @@ upset_data <- meta %>%
   ) %>%
   left_join(
     clue_res_summary %>%
-      distinct(lspci_id) %>%
+      distinct(lspci_id_t) %>%
       drop_na() %>%
       mutate(cmap_returns = TRUE),
-    by = "lspci_id"
+    by = c("lspci_id" = "lspci_id_t")
   ) %>%
   mutate(
     across(everything(), replace_na, replace = FALSE)
@@ -165,7 +187,7 @@ upset_plot <- upset(
     )
 )
 
-cowplot::ggsave2(
+ggsave(
   file.path(wd, "fig2a.pdf"),
   upset_plot, width = 6, height = 4
 )
