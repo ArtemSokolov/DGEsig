@@ -30,7 +30,7 @@ GS <- GS0 %>%
     is.na(stim),
     str_detect(coll(cell_id, ignore_case = TRUE), "rencell")
   ) %>%
-    group_by( DrugID=lspci_id ) %>% summarize( Set = list(entrezgene_id) )
+  group_by( DrugID=lspci_id ) %>% summarize( Set = list(entrezgene_id) )
 
 R0 <- syn("syn26468923") %>%
   qread()
@@ -90,8 +90,8 @@ hallmark_gene_sets <- all_msigdbr %>%
 #   group_nest(lspci_id)
 
 # fgsea_res <- expr_for_gsea %>%
-  # head(n = 1) %>%
-  # unnest(data) %>%
+# head(n = 1) %>%
+# unnest(data) %>%
 fgsea_res <- expr_agg %>%
   filter(is.finite(log2FoldChange)) %>%
   group_by(lspci_id) %>%
@@ -139,7 +139,7 @@ fgsea_res_mat <- reduce2(
   column_to_rownames("pathway") %>%
   as.matrix() %>%
   kNN( imp_var = FALSE, trace = TRUE)
-  # kNN(numFun = laeken::weightedMean, weightDist = TRUE, imp_var = FALSE, trace = TRUE)
+# kNN(numFun = laeken::weightedMean, weightDist = TRUE, imp_var = FALSE, trace = TRUE)
 
 library(pheatmap)
 withr::with_pdf(
@@ -159,11 +159,11 @@ withr::with_pdf(
   )
 )
 
-fgsea_cor <- cor(fgsea_res_mat, method = "pearson", use = "all.obs") %>%
-  {
-    na_mat <- is.na(.)
-    .[-which(rowSums(na_mat) > 1), -which(colSums(na_mat) > 1)]
-  }
+fgsea_cor <- cor(fgsea_res_mat, method = "pearson", use = "all.obs")
+# {
+#   na_mat <- is.na(.)
+#   .[-which(rowSums(na_mat) > 1), -which(colSums(na_mat) > 1)]
+# }
 
 fgsea_cor_df <- fgsea_cor %>%
   as_tibble(rownames = "DrugID1") %>%
@@ -173,8 +173,8 @@ fgsea_cor_df <- fgsea_cor %>%
 ## Compose tau profiles for each drug
 ## Join against gene sets
 V <- R %>% group_by( DrugID=idQ ) %>% arrange(idT) %>%
-    summarize( Vals = list(set_names(tau, idT)) ) %>%
-    inner_join(GS, by="DrugID")
+  summarize( Vals = list(set_names(tau, idT)) ) %>%
+  inner_join(GS, by="DrugID")
 
 ## Ensure that all tau values are in the same order
 stopifnot( map(V$Vals, names) %>% map_lgl(identical, .[[1]]) %>% all )
@@ -182,41 +182,41 @@ stopifnot( map(V$Vals, names) %>% map_lgl(identical, .[[1]]) %>% all )
 ## Compute pair-wise similarity for all query drugs
 tausim <- function( v1, v2 ) cor(v1,v2,method="pearson", use="complete.obs")
 jcrdsim <- function(gs1, gs2)
-    length(intersect(gs1, gs2)) / length(union(gs1, gs2))
+  length(intersect(gs1, gs2)) / length(union(gs1, gs2))
 SM <- crossing(rename_all(V, str_c, "1"),
                rename_all(V, str_c, "2")) %>%
-    mutate(TauSim  = map2_dbl(Vals1, Vals2, tausim),
-           JcrdSim = map2_dbl(Set1, Set2, jcrdsim))
+  mutate(TauSim  = map2_dbl(Vals1, Vals2, tausim),
+         JcrdSim = map2_dbl(Set1, Set2, jcrdsim))
 
 ## Perform hierarchical clustering with optimal leaf reordering
 ## Fixes row order based on the clustering results
 ## .df - data frame, .sim - similarity column
 simorder <- function( .df, .sim )
 {
-    ## Compose the distance matrix
-    DM <- .df %>% select( DrugID1, DrugID2, {{.sim}} ) %>%
-        spread( DrugID2, {{.sim}} ) %>% as.data.frame() %>%
-        column_to_rownames("DrugID1") %>% dist()
+  ## Compose the distance matrix
+  DM <- .df %>% select( DrugID1, DrugID2, {{.sim}} ) %>%
+    spread( DrugID2, {{.sim}} ) %>% as.data.frame() %>%
+    column_to_rownames("DrugID1") %>% dist()
 
-    ## Perform hierarchical clustering with optimal leaf reordering
-    lvl <- hclust(DM) %>% reorder(DM) %>%
-        dendextend::order.hclust() %>% labels(DM)[.]
+  ## Perform hierarchical clustering with optimal leaf reordering
+  lvl <- hclust(DM) %>% reorder(DM) %>%
+    dendextend::order.hclust() %>% labels(DM)[.]
 
-    ## Fix order of rows and column based on clustering results
-    .df  %>%
-      left_join(
-        compound_names %>%
-          select(DrugID1 = lspci_id, DrugName1 = name),
-        by = "DrugID1"
-      ) %>%
-      left_join(
-        compound_names %>%
-          select(DrugID2 = lspci_id, DrugName2 = name),
-        by = "DrugID2"
-      ) %>%
-      transmute(DrugID1 = factor(DrugID1, lvl),
-                      DrugID2 = factor(DrugID2, rev(lvl)),
-                      Similarity = {{.sim}}, DrugName1, DrugName2)
+  ## Fix order of rows and column based on clustering results
+  .df  %>%
+    left_join(
+      compound_names %>%
+        select(DrugID1 = lspci_id, DrugName1 = name),
+      by = "DrugID1"
+    ) %>%
+    left_join(
+      compound_names %>%
+        select(DrugID2 = lspci_id, DrugName2 = name),
+      by = "DrugID2"
+    ) %>%
+    transmute(DrugID1 = factor(DrugID1, lvl),
+              DrugID2 = factor(DrugID2, rev(lvl)),
+              Similarity = {{.sim}}, DrugName1, DrugName2)
 }
 
 ## Plotting elements
@@ -229,34 +229,34 @@ etxt <- function(s, ...) {element_text( size = s, face = "bold", ... )}
 ## Plots a similarity matrix
 simplot <- function( .df )
 {
-    ggplot( .df, aes(DrugID1, DrugID2, fill=Similarity) ) +
-        theme_minimal() +
-        geom_tile(color="gray") +
-##        geom_rect(aes(xmin=8.5, xmax=13.5, ymin=ndg-8.5+1, ymax=ndg-13.5+1),
-##                  fill=NA, color="black", size=1) +
-        theme(
-          axis.text = ebl(),
-              axis.title=ebl(),
-              legend.text = etxt(12), legend.title=etxt(14),
-              plot.margin = unit(c(0.5,0.5,0.5,2), "cm"))
+  ggplot( .df, aes(DrugID1, DrugID2, fill=Similarity) ) +
+    theme_minimal() +
+    geom_tile(color="gray") +
+    ##        geom_rect(aes(xmin=8.5, xmax=13.5, ymin=ndg-8.5+1, ymax=ndg-13.5+1),
+    ##                  fill=NA, color="black", size=1) +
+    theme(
+      axis.text = ebl(),
+      axis.title=ebl(),
+      legend.text = etxt(12), legend.title=etxt(14),
+      plot.margin = unit(c(0.5,0.5,0.5,2), "cm"))
 }
 
 ## Plots a zoom panel
 zoomplot <- function( .df )
 {
-    ggplot( .df, aes(DrugID1, DrugID2, fill=Similarity) ) +
-        theme_minimal() + geom_tile(color="gray") +
-        scale_y_discrete( labels = function(x) dnm[x] ) +
-        theme(axis.title=ebl(), axis.text.x=ebl(), axis.ticks.x=ebl(),
-              axis.text.y=etxt(12), plot.background=element_rect(color="black", size=2),
-              panel.grid.minor=ebl(), panel.grid.major=ebl())
+  ggplot( .df, aes(DrugID1, DrugID2, fill=Similarity) ) +
+    theme_minimal() + geom_tile(color="gray") +
+    scale_y_discrete( labels = function(x) dnm[x] ) +
+    theme(axis.title=ebl(), axis.text.x=ebl(), axis.ticks.x=ebl(),
+          axis.text.y=etxt(12), plot.background=element_rect(color="black", size=2),
+          panel.grid.minor=ebl(), panel.grid.major=ebl())
 }
 
 ## Compose similarity matrices
 XTau <- simorder( SM, TauSim )
 XJcrd <- simorder( SM, JcrdSim ) %>%
-    mutate(across(DrugID1, fct_relevel, levels(XTau$DrugID1)),
-           across(DrugID2, fct_relevel, levels(XTau$DrugID2)))
+  mutate(across(DrugID1, fct_relevel, levels(XTau$DrugID1)),
+         across(DrugID2, fct_relevel, levels(XTau$DrugID2)))
 ndg <- length(unique(SM$DrugID2))
 
 XCor <- simorder(fgsea_cor_df, Correlation)
@@ -312,8 +312,8 @@ gztau  <- zoomplot(ZTau)  + scale_fill_gradientn( colors=pal, limits=c(-1,1), gu
 
 ## Put everything together
 gg <- withr::with_pdf("test.pdf", egg::ggarrange( plots=list(ggjcrd, ggtau), ncol=2,
-                     labels=c(" A"," B"), padding=unit(2,"line"),
-                     label.args = list(gp = grid::gpar(font = 4, cex = 4)) )) #%>%
+                                                  labels=c(" A"," B"), padding=unit(2,"line"),
+                                                  label.args = list(gp = grid::gpar(font = 4, cex = 4)) )) #%>%
 ##    ggdraw() %>%
 ##    + draw_plot( gztau, .68, .7, .17, .25 ) %>%
 ##    + draw_plot( gzjcrd, .18, .7, .17, .25 )
@@ -339,8 +339,7 @@ clusts <- tribble(
 
 library(data.table)
 tas <- syn("syn26260405") %>%
-  read_csv() %>%
-  setDT()
+  fread()
 
 
 tas_weighted_jaccard <- function(data_tas, query_id, min_n = 6) {
@@ -440,3 +439,58 @@ ggsave(
   "tau_vs_tas.pdf",
   p, width = 5, height = 5
 )
+
+filter_reorder <- function(df, levels) {
+  df %>%
+    filter(DrugID1 %in% levels, DrugID2 %in% levels) %>%
+    mutate(
+      DrugID1 = factor(DrugID1, levels = levels),
+      DrugID2 = factor(DrugID2, levels = rev(levels)),
+    )
+}
+
+remove_na_iter <- function(df, col1, col2, m) {
+  df <- complete(df, {{col1}}, {{col2}})
+  while(any(is.na(pull(df, {{m}})))) {
+    most_missing <- df %>%
+      group_by({{col1}}) %>%
+      summarize(n_missing = sum(is.na({{m}})), .groups = "drop") %>%
+      arrange(desc(n_missing)) %>%
+      pull({{col1}}) %>%
+      head(n = 1)
+    df <- filter(df, !({{col1}} %in% most_missing), !({{col2}} %in% most_missing))
+  }
+  df
+}
+
+all_tas_filtered <- all_tas_similarity %>%
+  mutate(across(starts_with("DrugID"), ~as.numeric(as.character(.x)))) %>%
+  remove_na_iter(DrugID1, DrugID2, Similarity)
+
+XTas <- simorder(all_tas_filtered, Similarity)
+XTau <- simorder( SM, TauSim ) %>%
+  filter_reorder(levels(XTas$DrugID1))
+XJcrd <- simorder( SM, JcrdSim ) %>%
+  filter_reorder(levels(XTas$DrugID1))
+XCor <- simorder(fgsea_cor_df, Correlation) %>%
+  filter_reorder(levels(XTas$DrugID1))
+
+
+
+## Plot similarity matrices
+ggjcrd <- simplot(filter_reorder(XJcrd, levels(XTau$DrugID1))) + scale_fill_gradientn( colors=palj, limits=c(0,1), name="Gene set\nJaccard\nSimilarity" )
+ggtau  <- simplot(filter_reorder(XTau, levels(XTau$DrugID1))) + scale_fill_gradientn( colors=pal, limits=c(-1,1), name="Tau\nPearson\nCorrelation" )
+ggcor  <- simplot(filter_reorder(XCor, levels(XTau$DrugID1)))  + scale_fill_gradientn( colors=pal, limits=c(-1,1), name="GSEA\nPearson\nCorrelation" )
+ggtas  <- simplot(XTas)  +
+  scale_fill_gradientn( colors=palj, limits=c(0,1), name="Target\nJaccard\nSimilarity" )
+scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE)
+
+gg <- egg::ggarrange( plots=list(ggjcrd, ggtau, ggtas, ggcor), ncol=2,
+                      labels=c(" A"," B", " C", " D"), padding=unit(2,"line"),
+                      label.args = list(gp = grid::gpar(font = 4, cex = 4)) ) #%>%
+##    ggdraw() %>%
+##    + draw_plot( gztau, .68, .7, .17, .25 ) %>%
+##    + draw_plot( gzjcrd, .18, .7, .17, .25 )
+ggsave( "fig6.pdf", gg, width=17, height=13 )
+ggsave( "fig6.png", gg, width=17, height=13 )
