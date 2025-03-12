@@ -6,7 +6,7 @@ library(qs)
 library(magrittr)
 library(data.table)
 
-pathData <- "data"
+pathData <- "~/data"
 
 wd <- here("fig2")
 dir.create(wd, showWarnings = FALSE)
@@ -17,32 +17,32 @@ syn <- synExtra::synDownloader(pathData, .cache = TRUE)
 rdbu_colormap <- RColorBrewer::brewer.pal(5, "RdBu")
 
 cmap_nonlinear_colormap <- list(
-    colors = c(
-        rdbu_colormap[1:3],
-        rdbu_colormap[3:5]
-    ) %>%
-        rev(),
-    values = scales::rescale(c(-100, -90, -80, 80, 90, 100), from = c(-100, 100))
+  colors = c(
+    rdbu_colormap[1:3],
+    rdbu_colormap[3:5]
+  ) %>%
+    rev(),
+  values = scales::rescale(c(-100, -90, -80, 80, 90, 100), from = c(-100, 100))
 )
 
 ## Load all results
 R_all <- syn("syn26468923") %>%
-    # file.path(pathData, "clue_results_combined.rds") %>%
-    qread()
+  # file.path(pathData, "clue_results_combined.rds") %>%
+  qread()
 
 R <- R_all %>%
   # filter( result_type == "pert", score_level == "cell" ) %>%
   # pluck( "data", 1 ) %>%
   # filter(cell_id == "MCF7")
-    filter( result_type == "pert", score_level == "summary" ) %>%
-    pluck( "data", 1 )
+  filter( result_type == "pert", score_level == "summary" ) %>%
+  pluck( "data", 1 )
 
 condition_conc_vars <- c("cells", "drug_id", "lspci_id", "stim", "stim_conc", "time")
 
 M <- syn("syn25292310") %>%
-    # syn("syn22000707") %>%
-    qread() %>%
-    unnest(meta)
+  # syn("syn22000707") %>%
+  qread() %>%
+  unnest(meta)
 
 cmap_gene_sets <- syn("syn25314203.4") %>%
   qread()
@@ -51,7 +51,7 @@ dge_gene_sets <- syn("syn25303778") %>%
   qread()
 
 R_cmap_mcf7 <- syn("syn30410740") %>%
-  fread() %>%
+  read_csv() %>%
   filter(cell_id == "MCF7")
 
 gene_set_meta <- bind_rows(
@@ -183,10 +183,10 @@ R2 <- gene_set_meta %>%
   # higher absolute value. Approach used by CMap to aggregate cell lines
   group_by(source, cell_aggregate_method, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_q, cells_t, cutoff) %>%
   summarize(
-      tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
-        {.[order(abs(.))[2]]},
+    tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
+      {.[order(abs(.))[2]]},
     # tau = mean(tau),
-      .groups = "drop"
+    .groups = "drop"
   ) %>%
   left_join(
     compound_names %>%
@@ -494,11 +494,11 @@ R4 <- R3 %>% mutate(name_q = factor(name_q, lvl),
 # Complete missing observations at z-scores that yielded insufficient
 # genes for Clue with NA
 R4_completed <- bind_rows(
-    R4 %>%
-        filter(source == "dge"),
-    R4 %>%
-        filter(source == "l1000") %>%
-        complete(nesting(lspci_id_q, lspci_id_t, name_q, name_t, source), cutoff)
+  R4 %>%
+    filter(source == "dge"),
+  R4 %>%
+    filter(source == "l1000") %>%
+    complete(nesting(lspci_id_q, lspci_id_t, name_q, name_t, source), cutoff)
 ) %>%
   # IKK16 slipped through. It was profiled with DGE but
   # it's signature for whatever reason didn't return results in CMap
@@ -509,76 +509,76 @@ R4_completed <- bind_rows(
 pal <- rev(RColorBrewer::brewer.pal(n=7, name="RdBu"))
 etxt <- function(s, ...) {element_text( size = s, face = "bold", ... )}
 theme_bold <- function() {
-    theme(axis.text.x = etxt(12, angle=90, hjust=1, vjust=0.5),
-          axis.text.y = etxt(12), axis.title = etxt(14),
-          legend.text = etxt(12), legend.title = etxt(14),
-          axis.ticks = element_blank())
+  theme(axis.text.x = etxt(12, angle=90, hjust=1, vjust=0.5),
+        axis.text.y = etxt(12), axis.title = etxt(14),
+        legend.text = etxt(12), legend.title = etxt(14),
+        axis.ticks = element_blank())
 }
 
 ## Plotting a heatmap of clue hits
 fplot <- function(X) {
-    ggplot( X, aes(x=name_t, y=name_q, fill=tau) ) +
-        theme_minimal() + theme_bold() +
-        geom_tile(color="black") +
-        geom_tile(data=filter(X, name_q==name_t), color="black", size=1) +
-        scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
-        # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
-        xlab( "CMap Target" )
+  ggplot( X, aes(x=name_t, y=name_q, fill=tau) ) +
+    theme_minimal() + theme_bold() +
+    geom_tile(color="black") +
+    geom_tile(data=filter(X, name_q==name_t), color="black", size=1) +
+    scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
+    # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
+    xlab( "CMap Target" )
 }
 
 composite_plot <- function(X) {
-    ## DGE plot
-    gg1 <- fplot( filter(X, source == "dge") ) +
-        scale_x_discrete(position = "top") +
-      # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
-        theme(axis.title.x = element_blank(),
-              axis.text.x = element_text(hjust=0, vjust=0.5),
-              plot.margin = margin(r = 0.25, l = 0.25, unit = "in")) +
-        ylab( "3' DGE Query" )
+  ## DGE plot
+  gg1 <- fplot( filter(X, source == "dge") ) +
+    scale_x_discrete(position = "top") +
+    # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(hjust=0, vjust=0.5),
+          plot.margin = margin(r = 0.25, l = 0.25, unit = "in")) +
+    ylab( "3' DGE Query" )
 
-    ## L1000 plot
-    gg2 <- fplot( filter(X, source == "l1000") ) +
-        ylab( "L1000 Query" ) +
-        # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
-        # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100)) +
-        theme(legend.position = "bottom",
-              plot.margin = margin(r = 0.25, l = 0.25, unit = "in"))
-#
-#     cell_plot <- X %>%
-#         distinct(drugQ, cell_id_query) %>%
-#         # unchop(cell_id_query) %>%
-#         mutate(
-#             cell_id_query = map_chr(
-#                 cell_id_query,
-#                 ~if (is.null(.x) || length(.x) == 1) .x %||% "" else "multiple"
-#             )
-#         ) %>%
-#         drop_na() %>%
-#         ggplot(aes(drugQ, fill = cell_id_query)) +
-#             geom_bar() +
-#             coord_flip() +
-#             theme_minimal() + theme_bold() +
-#             scale_fill_brewer(palette = "Set2", name = "Query cell line") +
-#             theme(
-#                 # axis.ticks.y = element_blank(), axis.text.y = element_blank(),
-#                 # axis.title.y = element_blank(), axis.title.x = element_blank(),
-#                 axis.title = element_blank(), axis.ticks = element_blank(),
-#                 axis.text.x = element_blank(), axis.text.y = element_blank()
-#             )
+  ## L1000 plot
+  gg2 <- fplot( filter(X, source == "l1000") ) +
+    ylab( "L1000 Query" ) +
+    # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
+    # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100)) +
+    theme(legend.position = "bottom",
+          plot.margin = margin(r = 0.25, l = 0.25, unit = "in"))
+  #
+  #     cell_plot <- X %>%
+  #         distinct(drugQ, cell_id_query) %>%
+  #         # unchop(cell_id_query) %>%
+  #         mutate(
+  #             cell_id_query = map_chr(
+  #                 cell_id_query,
+  #                 ~if (is.null(.x) || length(.x) == 1) .x %||% "" else "multiple"
+  #             )
+  #         ) %>%
+  #         drop_na() %>%
+  #         ggplot(aes(drugQ, fill = cell_id_query)) +
+  #             geom_bar() +
+  #             coord_flip() +
+  #             theme_minimal() + theme_bold() +
+  #             scale_fill_brewer(palette = "Set2", name = "Query cell line") +
+  #             theme(
+  #                 # axis.ticks.y = element_blank(), axis.text.y = element_blank(),
+  #                 # axis.title.y = element_blank(), axis.title.x = element_blank(),
+  #                 axis.title = element_blank(), axis.ticks = element_blank(),
+  #                 axis.text.x = element_blank(), axis.text.y = element_blank()
+  #             )
 
-    ## Summary plot
-    S <- X %>% filter(name_q == name_t) %>%
-        mutate_at("source", factor, levels=c("l1000","dge")) %>%
-        mutate_at("source", fct_recode, `Self (3' DGE)`="dge", `Self (L1000)`="l1000")
-    ggs <- ggplot( S, aes(x=name_t, y=source, fill=tau) ) +
-        theme_minimal() + theme_bold() +
-        geom_tile(color="black") + ylab("") +
-        scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
-        # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
-        theme(axis.text.x = element_blank(), axis.title.x = element_blank())
+  ## Summary plot
+  S <- X %>% filter(name_q == name_t) %>%
+    mutate_at("source", factor, levels=c("l1000","dge")) %>%
+    mutate_at("source", fct_recode, `Self (3' DGE)`="dge", `Self (L1000)`="l1000")
+  ggs <- ggplot( S, aes(x=name_t, y=source, fill=tau) ) +
+    theme_minimal() + theme_bold() +
+    geom_tile(color="black") + ylab("") +
+    scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
+    # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
+    theme(axis.text.x = element_blank(), axis.title.x = element_blank())
 
-    ## Create the composite plot
-    egg::ggarrange( gg1, ggs, gg2, heights=c(7.5,0.5,7.5), widths = c(7), draw=FALSE )
+  ## Create the composite plot
+  egg::ggarrange( gg1, ggs, gg2, heights=c(7.5,0.5,7.5), widths = c(7), draw=FALSE )
 }
 
 write_csv(
@@ -589,16 +589,16 @@ write_csv(
 
 
 ggcomp <- R4_completed %>%
-    filter( source == "l1000" ) %>%
-    group_nest( cutoff ) %>%
-    mutate(
-        data = map(
-            data,
-            bind_rows,
-            filter( R4_completed, source == "dge")
-        ) %>%
-            map(composite_plot)
-    )
+  filter( source == "l1000" ) %>%
+  group_nest( cutoff ) %>%
+  mutate(
+    data = map(
+      data,
+      bind_rows,
+      filter( R4_completed, source == "dge")
+    ) %>%
+      map(composite_plot)
+  )
 
 ggsave(
   "fig2_summary_target_mean_query.pdf",
@@ -606,34 +606,46 @@ ggsave(
 )
 
 
- pwalk(
-    ggcomp,
-    function(cutoff, query_type, data, ...) {
-        walk(
-          file.path(
-            wd,
-            paste0("fig2_mcf7_target_", cutoff, c(".png", ".pdf"))
-          ),
-          ggsave, data, width=10, height=18 )
-    }
+pwalk(
+  ggcomp,
+  function(cutoff, query_type, data, ...) {
+    walk(
+      file.path(
+        wd,
+        paste0("fig2_mcf7_target_", cutoff, c(".png", ".pdf"))
+      ),
+      ggsave, data, width=10, height=18 )
+  }
+)
+
+gg2 <- filter(R3, source == "l1000", cutoff == 0.7 ) %>%
+  mutate(source = "dge") %>%
+  cluster_mat() %>%
+  fplot() +
+  ylab( "L1000 Query" ) +
+  # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
+  exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100))
+
+ggsave(
+  "fig2b_l1000_only_cmap_colormap.pdf", gg2, width = 10, height = 9
 )
 
 # Test if self-similarity is significantly higher than other similarities
 
 wilcox_self_similarities <- R3 %>%
-    group_by(source, cutoff, lspci_id_q, name_q) %>%
-    summarize(
-        wilcox = wilcox.test(
-            tau[lspci_id_q != lspci_id_t],
-            mu = tau[lspci_id_q == lspci_id_t],
-            alternative = "less"
-        ) %>%
-            list(),
-        .groups = "drop"
+  group_by(source, cutoff, lspci_id_q, name_q) %>%
+  summarize(
+    wilcox = wilcox.test(
+      tau[lspci_id_q != lspci_id_t],
+      mu = tau[lspci_id_q == lspci_id_t],
+      alternative = "less"
     ) %>%
-    mutate(
-        p.value = map_dbl(wilcox, "p.value")
-    )
+      list(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p.value = map_dbl(wilcox, "p.value")
+  )
 
 wilcox_self_similarities %>%
   count(cutoff, source, significant = p.value < 0.05) %T>%
@@ -654,37 +666,37 @@ logit_p_trans <- function(mi, ma) {
 }
 
 self_similarity_beeswarm_data <- R4 %>%
-    filter(is.na(cutoff) | cutoff == 0.7) %>%
-    mutate(
-        self_similarity = if_else(
-            lspci_id_q == lspci_id_t,
-            "self_similarity",
-            "cross_similarity"
-        ) %>%
-            fct_relevel("cross_similarity")
+  filter(is.na(cutoff) | cutoff == 0.7) %>%
+  mutate(
+    self_similarity = if_else(
+      lspci_id_q == lspci_id_t,
+      "self_similarity",
+      "cross_similarity"
     ) %>%
-    arrange(self_similarity)
+      fct_relevel("cross_similarity")
+  ) %>%
+  arrange(self_similarity)
 
 self_similarity_beeswarm_plot <- self_similarity_beeswarm_data %>%
-        ggplot(
-            aes(tau, name_q, color = self_similarity)
-        ) +
-        geom_quasirandom(
-            data = ~filter(.x, self_similarity == "cross_similarity"),
-            groupOnX = FALSE
-        ) +
-        geom_point(
-            data = ~filter(.x, self_similarity == "self_similarity")
-        ) +
-        facet_wrap(~source, nrow = 1) +
-        scale_color_manual(
-            values = c(
-                self_similarity = "#FF0000",
-                cross_similarity = "#00000088"
-            ),
-            guide = FALSE
-        ) +
-        scale_x_continuous(trans = logit_p_trans(-101, 101))
+  ggplot(
+    aes(tau, name_q, color = self_similarity)
+  ) +
+  geom_quasirandom(
+    data = ~filter(.x, self_similarity == "cross_similarity"),
+    groupOnX = FALSE
+  ) +
+  geom_point(
+    data = ~filter(.x, self_similarity == "self_similarity")
+  ) +
+  facet_wrap(~source, nrow = 1) +
+  scale_color_manual(
+    values = c(
+      self_similarity = "#FF0000",
+      cross_similarity = "#00000088"
+    ),
+    guide = FALSE
+  ) +
+  scale_x_continuous(trans = logit_p_trans(-101, 101))
 
 ggsave(
   file.path(wd, "similarity_beeswarm_separate.pdf"),
@@ -693,50 +705,50 @@ ggsave(
 
 
 self_similarity_beeswarm_agg_plot <- self_similarity_beeswarm_data %>%
-    ggplot(
-        aes(source, tau, fill = self_similarity)
-    ) +
-    geom_quasirandom(
-        data = ~filter(.x, self_similarity == "cross_similarity"),
-        shape = 21,
-        size = 1,
-        color = "NA",
-        method = "quasirandom",
-        bandwidth = 0.2,
-        width = 0.5
-    ) +
-    # geom_beeswarm(
-    #     data = ~filter(.x, self_similarity == "cross_similarity"),
-    #     shape = 21,
-    #     color = "NA",
-    #     priority = "random"
-    # ) +
-    scale_fill_manual(
-        values = c(
-            self_similarity = "#FF0000",
-            cross_similarity = "#00000088"
-        ),
-        guide = FALSE
-    ) +
-    facet_wrap(~source, scales = "free", ncol = 1) +
-    theme_light() +
-    theme_bold() +
-    theme(
-        strip.background = element_blank(),
-        strip.text = element_blank(),
-        panel.border = element_blank(),
-        panel.grid.major.x = element_blank(),
-        axis.title.x = element_blank(),
-        axis.text.x = element_blank()
-    ) +
-    scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
-    labs(x = NULL, y = "Tau")
+  ggplot(
+    aes(source, tau, fill = self_similarity)
+  ) +
+  geom_quasirandom(
+    data = ~filter(.x, self_similarity == "cross_similarity"),
+    shape = 21,
+    size = 1,
+    color = "NA",
+    method = "quasirandom",
+    bandwidth = 0.2,
+    width = 0.5
+  ) +
+  # geom_beeswarm(
+  #     data = ~filter(.x, self_similarity == "cross_similarity"),
+  #     shape = 21,
+  #     color = "NA",
+  #     priority = "random"
+  # ) +
+  scale_fill_manual(
+    values = c(
+      self_similarity = "#FF0000",
+      cross_similarity = "#00000088"
+    ),
+    guide = FALSE
+  ) +
+  facet_wrap(~source, scales = "free", ncol = 1) +
+  theme_light() +
+  theme_bold() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank()
+  ) +
+  scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
+  labs(x = NULL, y = "Tau")
 
 
 ggsave(
-    file.path(wd, "fig2b_self_similarity_beeswarm_agg_logit.pdf"),
-    self_similarity_beeswarm_agg_plot,
-    width = 1.5, height = 7.5
+  file.path(wd, "fig2b_self_similarity_beeswarm_agg_logit.pdf"),
+  self_similarity_beeswarm_agg_plot,
+  width = 1.5, height = 7.5
 )
 
 ggsave(
@@ -747,36 +759,36 @@ ggsave(
 )
 
 self_similarity_stats <- R4 %>%
-    group_by(source, lspci_id_q, name_q, cutoff) %>%
-    arrange(desc(tau)) %>%
-    summarize(
-        rank = seq_len(n())[lspci_id_q == lspci_id_t],
-        rank_percentile = rank / n(),
-        .groups = "drop"
-    )
+  group_by(source, lspci_id_q, name_q, cutoff) %>%
+  arrange(desc(tau)) %>%
+  summarize(
+    rank = seq_len(n())[lspci_id_q == lspci_id_t],
+    rank_percentile = rank / n(),
+    .groups = "drop"
+  )
 
 wilcox_self_similarities_col_plot <- wilcox_self_similarities %>%
-    mutate(log_p = -log10(p.value)) %>%
-    ggplot(aes(x = log_p, y = name_q, fill = source)) +
-    geom_col() +
-    facet_wrap(~source, nrow = 1) +
-    guides(fill = FALSE)
+  mutate(log_p = -log10(p.value)) %>%
+  ggplot(aes(x = log_p, y = name_q, fill = source)) +
+  geom_col() +
+  facet_wrap(~source, nrow = 1) +
+  guides(fill = FALSE)
 
 ggsave(
-    file.path("self_similarity", "wilcox_cols.pdf"),
-    wilcox_self_similarities_col_plot,
-    width = 4, height = 8
+  file.path("self_similarity", "wilcox_cols.pdf"),
+  wilcox_self_similarities_col_plot,
+  width = 4, height = 8
 )
 
 wilcox_self_similarities_scatterplot <- wilcox_self_similarities %>%
-    mutate(log_p = -log10(p.value)) %>%
-    select(idQ, source, p.value) %>%
-    spread(source, p.value) %>%
-    ggplot(aes(x = DGE, y = L1000)) +
-    geom_point() +
-    scale_x_log10() +
-    scale_y_log10() +
-    coord_equal()
+  mutate(log_p = -log10(p.value)) %>%
+  select(idQ, source, p.value) %>%
+  spread(source, p.value) %>%
+  ggplot(aes(x = DGE, y = L1000)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  coord_equal()
 
 
 
@@ -784,133 +796,133 @@ wilcox_self_similarities_scatterplot <- wilcox_self_similarities %>%
 
 # Use old version of TAS vectors that matches used lspci_ids
 tas <- syn("syn20830942.4") %>%
-    read_csv()
+  read_csv()
 
 library(data.table)
 
 lspci_id_name_map <- R2 %>%
-    distinct(lspci_id = idQ, name = drugQ) %>%
-    mutate(across(lspci_id, as.double))
+  distinct(lspci_id = idQ, name = drugQ) %>%
+  mutate(across(lspci_id, as.double))
 
 tas_used <- tas %>%
-    filter(fp_name == "morgan_normal", lspci_id %in% R2$idQ) %>%
-    distinct(lspci_id, gene_id = entrez_gene_id, tas) %>%
-    setDT()
+  filter(fp_name == "morgan_normal", lspci_id %in% R2$idQ) %>%
+  distinct(lspci_id, gene_id = entrez_gene_id, tas) %>%
+  setDT()
 
 tas_weighted_jaccard <- function(data_tas, query_id, min_n = 6) {
-    query_tas <- data_tas[lspci_id == query_id, .(gene_id, tas = 11 - tas)]
-    data_tas[
-        ,
-        .(lspci_id, gene_id, tas = 11 - tas)
-    ][
-        query_tas,
-        on = "gene_id",
-        nomatch = NULL
-    ][
-        ,
-        mask := tas > 1 | i.tas > 1
-    ][
-        ,
-        if (sum(mask) >= min_n) .(
-            "tas_similarity" = sum(pmin(tas[mask], i.tas[mask])) / sum(pmax(tas[mask], i.tas[mask])),
-            "n" = sum(mask),
-            "n_prior" = .N
-        ) else .(
-            "tas_similarity" = numeric(),
-            "n" = integer(),
-            "n_prior" = integer()
-        ),
-        by = "lspci_id"
-    ]
+  query_tas <- data_tas[lspci_id == query_id, .(gene_id, tas = 11 - tas)]
+  data_tas[
+    ,
+    .(lspci_id, gene_id, tas = 11 - tas)
+  ][
+    query_tas,
+    on = "gene_id",
+    nomatch = NULL
+  ][
+    ,
+    mask := tas > 1 | i.tas > 1
+  ][
+    ,
+    if (sum(mask) >= min_n) .(
+      "tas_similarity" = sum(pmin(tas[mask], i.tas[mask])) / sum(pmax(tas[mask], i.tas[mask])),
+      "n" = sum(mask),
+      "n_prior" = .N
+    ) else .(
+      "tas_similarity" = numeric(),
+      "n" = integer(),
+      "n_prior" = integer()
+    ),
+    by = "lspci_id"
+  ]
 }
 
 all_similarity <- tibble(lspci_id_1 = unique(tas_used$lspci_id)) %>%
-    mutate(
-        data = map(
-            lspci_id_1,
-            ~tas_weighted_jaccard(tas_used, .x) %>%
-                rename(lspci_id_2 = lspci_id)
-        )
-    ) %>%
-    unnest(data) %>%
-    left_join(
-        lspci_id_name_map %>%
-            rename(name_1 = name, lspci_id_1 = lspci_id)
-    ) %>%
-    left_join(
-        lspci_id_name_map %>%
-            rename(name_2 = name, lspci_id_2 = lspci_id)
-    ) %>%
-    mutate(across(starts_with("name"), factor, levels = lvl)) %>%
-    mutate(across(name_2, fct_rev))
+  mutate(
+    data = map(
+      lspci_id_1,
+      ~tas_weighted_jaccard(tas_used, .x) %>%
+        rename(lspci_id_2 = lspci_id)
+    )
+  ) %>%
+  unnest(data) %>%
+  left_join(
+    lspci_id_name_map %>%
+      rename(name_1 = name, lspci_id_1 = lspci_id)
+  ) %>%
+  left_join(
+    lspci_id_name_map %>%
+      rename(name_2 = name, lspci_id_2 = lspci_id)
+  ) %>%
+  mutate(across(starts_with("name"), factor, levels = lvl)) %>%
+  mutate(across(name_2, fct_rev))
 
 tas_similarity_plot <- ggplot( all_similarity, aes(x=name_1, y=name_2, fill=tas_similarity) ) +
-    theme_minimal() + theme_bold() +
-    geom_tile(color="black") +
-    geom_tile(data=filter(all_similarity, lspci_id_1==lspci_id_2), color="black", size=1) +
-    # scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(0, 1) ) +
-    scale_fill_viridis_c(limits = c(0, 1), na.value = "grey90") +
-    # xlab( "CMap Target" ) +
-    scale_x_discrete(position = "top", drop = FALSE) +
-    scale_y_discrete(drop = FALSE) +
-    theme(axis.title.x = element_blank(),
-          axis.text.x = element_text(hjust=0, vjust=0.5),
-          axis.title.y = element_blank())
-    # ylab( "3' DGE Query")
+  theme_minimal() + theme_bold() +
+  geom_tile(color="black") +
+  geom_tile(data=filter(all_similarity, lspci_id_1==lspci_id_2), color="black", size=1) +
+  # scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(0, 1) ) +
+  scale_fill_viridis_c(limits = c(0, 1), na.value = "grey90") +
+  # xlab( "CMap Target" ) +
+  scale_x_discrete(position = "top", drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(hjust=0, vjust=0.5),
+        axis.title.y = element_blank())
+# ylab( "3' DGE Query")
 
 dir.create("tas_similarity")
 ggsave(
-    file.path("tas_similarity", "tas_similarity_heatmap.pdf"),
-    width = 8, height = 6
+  file.path("tas_similarity", "tas_similarity_heatmap.pdf"),
+  width = 8, height = 6
 )
 
 # Tas similarity Fig 6
 
 fig6_drugs <- c(4763, 27399, 86140, 99986, 84200, 102661, 117785,
-  101253, 36292, 57736, 100531, 14772, 97896, 76898,
-  95012, 12104, 103943, 66433, 101674, 83449, 84593,
-  96877, 52270, 72549, 96251, 82024, 99378, 66419,
-  90309, 87501, 91047, 82566, 45745, 90255, 86536,
-  99422, 96405, 75291, 92053, 97426, 20087, 66998,
-  91759, 79027, 52760)
+                101253, 36292, 57736, 100531, 14772, 97896, 76898,
+                95012, 12104, 103943, 66433, 101674, 83449, 84593,
+                96877, 52270, 72549, 96251, 82024, 99378, 66419,
+                90309, 87501, 91047, 82566, 45745, 90255, 86536,
+                99422, 96405, 75291, 92053, 97426, 20087, 66998,
+                91759, 79027, 52760)
 
 tas_used <- tas %>%
-    filter(fp_name == "morgan_normal", lspci_id %in% fig6_drugs) %>%
-    distinct(lspci_id, gene_id = entrez_gene_id, tas) %>%
-    setDT()
+  filter(fp_name == "morgan_normal", lspci_id %in% fig6_drugs) %>%
+  distinct(lspci_id, gene_id = entrez_gene_id, tas) %>%
+  setDT()
 
 all_similarity <- tibble(lspci_id_1 = unique(tas_used$lspci_id)) %>%
-    mutate(
-        data = map(
-            lspci_id_1,
-            ~tas_weighted_jaccard(tas_used, .x) %>%
-                rename(lspci_id_2 = lspci_id)
-        )
-    ) %>%
-    unnest(data) %>%
-    mutate(across(starts_with("lspci_id"), factor, levels = fig6_drugs)) %>%
-    mutate(across(lspci_id_2, fct_rev))
+  mutate(
+    data = map(
+      lspci_id_1,
+      ~tas_weighted_jaccard(tas_used, .x) %>%
+        rename(lspci_id_2 = lspci_id)
+    )
+  ) %>%
+  unnest(data) %>%
+  mutate(across(starts_with("lspci_id"), factor, levels = fig6_drugs)) %>%
+  mutate(across(lspci_id_2, fct_rev))
 
 tas_similarity_plot <- ggplot( all_similarity, aes(x=lspci_id_1, y=lspci_id_2, fill=tas_similarity) ) +
-    theme_minimal() + theme_bold() +
-    geom_tile(color="black") +
-    # geom_tile(data=filter(all_similarity, lspci_id_1==lspci_id_2), color="black", size=1) +
-    # scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(0, 1) ) +
-    scale_fill_viridis_c(limits = c(0, 1), na.value = "grey90") +
-    # xlab( "CMap Target" ) +
-    scale_x_discrete(position = "top", drop = FALSE) +
-    scale_y_discrete(drop = FALSE) +
-    theme(axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank())
+  theme_minimal() + theme_bold() +
+  geom_tile(color="black") +
+  # geom_tile(data=filter(all_similarity, lspci_id_1==lspci_id_2), color="black", size=1) +
+  # scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(0, 1) ) +
+  scale_fill_viridis_c(limits = c(0, 1), na.value = "grey90") +
+  # xlab( "CMap Target" ) +
+  scale_x_discrete(position = "top", drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank())
 # ylab( "3' DGE Query")
 
 dir.create("tas_similarity")
 ggsave(
-    file.path("tas_similarity", "tas_similarity_fig6_heatmap.pdf"),
-    tas_similarity_plot,
-    width = 8, height = 6
+  file.path("tas_similarity", "tas_similarity_fig6_heatmap.pdf"),
+  tas_similarity_plot,
+  width = 8, height = 6
 )
 
 
@@ -977,67 +989,67 @@ R2 <- gene_set_meta %>%
 
 
 R3 <- R %>% filter(idT %in% names(dmap), idQ %in% names(dmap)) %>%
-    select( idQ, idT, tau, source, z_score_cutoff, query_type, cell_id_query ) %>%
-    group_by( idQ, idT, source, z_score_cutoff, query_type, cell_id_query ) %>%
-    summarize_at( "tau", ~.x[ which.max(abs(.x)) ] ) %>% ungroup() %>%
-    mutate_at( c("idQ", "idT"), as.character ) %>%
-    mutate_at( "source", toupper ) %>%
-    mutate( drugT = dmap[idT], drugQ = dmap[idQ] )
+  select( idQ, idT, tau, source, z_score_cutoff, query_type, cell_id_query ) %>%
+  group_by( idQ, idT, source, z_score_cutoff, query_type, cell_id_query ) %>%
+  summarize_at( "tau", ~.x[ which.max(abs(.x)) ] ) %>% ungroup() %>%
+  mutate_at( c("idQ", "idT"), as.character ) %>%
+  mutate_at( "source", toupper ) %>%
+  mutate( drugT = dmap[idT], drugQ = dmap[idQ] )
 
 R_torin <- R3 %>%
-    filter(query_type == "per_cell_line") %>%
-    mutate(drugQ = cell_id_query) %>%
-    bind_rows(
-        R2 %>%
-            filter(query_type == "aggregated", source == "L1000", drugQ == "torin-1") %>%
-            mutate(drugQ = "aggregated")
+  filter(query_type == "per_cell_line") %>%
+  mutate(drugQ = cell_id_query) %>%
+  bind_rows(
+    R2 %>%
+      filter(query_type == "aggregated", source == "L1000", drugQ == "torin-1") %>%
+      mutate(drugQ = "aggregated")
+  ) %>%
+  bind_rows(
+    crossing(
+      drugQ = "",
+      drugT = unique(.[["drugT"]]),
+      z_score_cutoff = unique(.[["z_score_cutoff"]])
     ) %>%
-    bind_rows(
-        crossing(
-            drugQ = "",
-            drugT = unique(.[["drugT"]]),
-            z_score_cutoff = unique(.[["z_score_cutoff"]])
-        ) %>%
-            mutate(tau = 0)
-    )
+      mutate(tau = 0)
+  )
 
 plot_torin <- R_torin %>%
-    group_nest(z_score_cutoff) %>%
-    mutate(
-        data = map(
-            data,
-            ~.x %>%
-                mutate(
-                    drugQ = fct_relevel(drugQ, "aggregated", ""),
-                    border = case_when(
-                        drugQ == "" ~ 0,
-                        idQ == idT ~ 1,
-                        TRUE ~ 0.4
-                    ),
-                    color = if_else(drugQ == "", NA_character_, "black")
-                ) %>%
-                ggplot(aes(x=drugT, y=drugQ, fill=tau, size=border) ) +
-                scale_size_identity() +
-                theme_minimal() + theme_bold() +
-                geom_tile(aes(color = color)) +
-                scale_color_identity() +
-                # geom_tile(data=filter(X, idQ==idT), color="black", size=1) +
-                scale_fill_gradientn( colors=pal, limits=c(-100,100) ) +
-                xlab( "Clue Target" ) +
-                ylab("Query cell line")
-        )
+  group_nest(z_score_cutoff) %>%
+  mutate(
+    data = map(
+      data,
+      ~.x %>%
+        mutate(
+          drugQ = fct_relevel(drugQ, "aggregated", ""),
+          border = case_when(
+            drugQ == "" ~ 0,
+            idQ == idT ~ 1,
+            TRUE ~ 0.4
+          ),
+          color = if_else(drugQ == "", NA_character_, "black")
+        ) %>%
+        ggplot(aes(x=drugT, y=drugQ, fill=tau, size=border) ) +
+        scale_size_identity() +
+        theme_minimal() + theme_bold() +
+        geom_tile(aes(color = color)) +
+        scale_color_identity() +
+        # geom_tile(data=filter(X, idQ==idT), color="black", size=1) +
+        scale_fill_gradientn( colors=pal, limits=c(-100,100) ) +
+        xlab( "Clue Target" ) +
+        ylab("Query cell line")
     )
+  )
 
 pwalk(
-    plot_torin,
-    function(z_score_cutoff, data, ...) {
-        walk(
-            paste0("figSx_torin-1_per_cell_line_", z_score_cutoff, c(".pdf", ".png")),
-            ggsave,
-            data,
-            width = 7, height = 6
-        )
-    }
+  plot_torin,
+  function(z_score_cutoff, data, ...) {
+    walk(
+      paste0("figSx_torin-1_per_cell_line_", z_score_cutoff, c(".pdf", ".png")),
+      ggsave,
+      data,
+      width = 7, height = 6
+    )
+  }
 )
 
 ## Target by cell-line
@@ -1045,72 +1057,72 @@ pwalk(
 R_all <- file.path(pathData, "clue_results_combined.rds") %>% read_rds()
 
 R4 <- R_all %>%
-    filter( result_type == "pert", score_level == "cell" ) %>%
-    pluck( "data", 1 ) %>%
-    rename(idQ = lspci_id_query, idT = lspci_id_target, drugT = pert_iname)%>%
-    filter(idT %in% names(dmap), idQ %in% names(dmap)) %>%
-    select( idQ, idT, tau, source, z_score_cutoff, query_type, cell_id_query, cell_id_target ) %>%
-    group_by( idQ, idT, source, z_score_cutoff, query_type, cell_id_target ) %>%
-    summarize_at( "tau", ~.x[ which.max(abs(.x)) ] ) %>% ungroup() %>%
-    mutate_at( c("idQ", "idT"), as.character ) %>%
-    mutate_at( "source", toupper ) %>%
-    mutate( drugT = dmap[idT], drugQ = dmap[idQ] )
+  filter( result_type == "pert", score_level == "cell" ) %>%
+  pluck( "data", 1 ) %>%
+  rename(idQ = lspci_id_query, idT = lspci_id_target, drugT = pert_iname)%>%
+  filter(idT %in% names(dmap), idQ %in% names(dmap)) %>%
+  select( idQ, idT, tau, source, z_score_cutoff, query_type, cell_id_query, cell_id_target ) %>%
+  group_by( idQ, idT, source, z_score_cutoff, query_type, cell_id_target ) %>%
+  summarize_at( "tau", ~.x[ which.max(abs(.x)) ] ) %>% ungroup() %>%
+  mutate_at( c("idQ", "idT"), as.character ) %>%
+  mutate_at( "source", toupper ) %>%
+  mutate( drugT = dmap[idT], drugQ = dmap[idQ] )
 
 R4_torin <- R4 %>%
-    filter(query_type == "aggregated", idQ == 101253) %>%
-    mutate(drugQ = str_to_upper(cell_id_target)) %>%
-    bind_rows(
-        R2 %>%
-            filter(query_type == "aggregated", drugQ == "torin-1") %>%
-            mutate(drugQ = "aggregated")
+  filter(query_type == "aggregated", idQ == 101253) %>%
+  mutate(drugQ = str_to_upper(cell_id_target)) %>%
+  bind_rows(
+    R2 %>%
+      filter(query_type == "aggregated", drugQ == "torin-1") %>%
+      mutate(drugQ = "aggregated")
+  ) %>%
+  bind_rows(
+    crossing(
+      drugQ = "",
+      drugT = unique(.[["drugT"]]),
+      z_score_cutoff = unique(.[["z_score_cutoff"]]),
+      source = unique(.[["source"]])
     ) %>%
-    bind_rows(
-        crossing(
-            drugQ = "",
-            drugT = unique(.[["drugT"]]),
-            z_score_cutoff = unique(.[["z_score_cutoff"]]),
-            source = unique(.[["source"]])
-        ) %>%
-            mutate(tau = 0)
-    )
+      mutate(tau = 0)
+  )
 
 plot_torin2 <- R4_torin %>%
-    group_nest(source, z_score_cutoff) %>%
-    mutate(
-        data = map(
-            data,
-            ~.x %>%
-                mutate(
-                    drugQ = fct_relevel(drugQ, "aggregated", ""),
-                    border = case_when(
-                        drugQ == "" ~ 0,
-                        idQ == idT ~ 1,
-                        TRUE ~ 0.4
-                    ),
-                    color = if_else(drugQ == "", NA_character_, "black")
-                ) %>%
-                ggplot(aes(x=drugT, y=drugQ, fill=tau, size=border) ) +
-                scale_size_identity() +
-                theme_minimal() + theme_bold() +
-                geom_tile(aes(color = color)) +
-                scale_color_identity() +
-                # geom_tile(data=filter(X, idQ==idT), color="black", size=1) +
-                scale_fill_gradientn( colors=pal, limits=c(-100,100) ) +
-                xlab( "Clue Target" ) +
-                ylab("Target cell line")
-        )
+  group_nest(source, z_score_cutoff) %>%
+  mutate(
+    data = map(
+      data,
+      ~.x %>%
+        mutate(
+          drugQ = fct_relevel(drugQ, "aggregated", ""),
+          border = case_when(
+            drugQ == "" ~ 0,
+            idQ == idT ~ 1,
+            TRUE ~ 0.4
+          ),
+          color = if_else(drugQ == "", NA_character_, "black")
+        ) %>%
+        ggplot(aes(x=drugT, y=drugQ, fill=tau, size=border) ) +
+        scale_size_identity() +
+        theme_minimal() + theme_bold() +
+        geom_tile(aes(color = color)) +
+        scale_color_identity() +
+        # geom_tile(data=filter(X, idQ==idT), color="black", size=1) +
+        scale_fill_gradientn( colors=pal, limits=c(-100,100) ) +
+        xlab( "Clue Target" ) +
+        ylab("Target cell line")
     )
+  )
 
 pwalk(
-    plot_torin2,
-    function(z_score_cutoff, data, source, ...) {
-        walk(
-            paste0("figSx_torin-1_target_cell_line_", source, "_", z_score_cutoff, c(".pdf", ".png")),
-            ggsave,
-            data,
-            width = 7, height = 3.5
-        )
-    }
+  plot_torin2,
+  function(z_score_cutoff, data, source, ...) {
+    walk(
+      paste0("figSx_torin-1_target_cell_line_", source, "_", z_score_cutoff, c(".pdf", ".png")),
+      ggsave,
+      data,
+      width = 7, height = 3.5
+    )
+  }
 )
 
 
@@ -1204,7 +1216,7 @@ p <- ggplot(
     x = "Connectivity Query X Target Y", y = "Connectivity Query Y Target X",
     color = "Query cell types"
   )
-  # lims(x = c(-130, 130), y = c(-130, 130))
+# lims(x = c(-130, 130), y = c(-130, 130))
 
 ggsave(
   file.path(wd, "query_reciprocal_scatter.pdf"), p,

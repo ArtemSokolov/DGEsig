@@ -29,6 +29,16 @@ cmap_nonlinear_colormap <- list(
 R <- syn("syn26468923") %>%
   qread()
 
+cmap_meta <- syn("syn21547097") %>%
+  read_csv(
+    col_types = cols(
+      cmap_name = col_character(),
+      compound_aliases = col_character(),
+      target = col_character(),
+      moa = col_character()
+    )
+  )
+
 R_cells <- R %>%
   filter(result_type == "pert", score_level == "cell") %>%
   chuck("data", 1) %>%
@@ -68,15 +78,6 @@ gene_set_meta <- bind_rows(
 ) %>%
   mutate(cells = coalesce(cells, "summary"))
 
-cmap_meta <- syn("syn21547097") %>%
-  read_csv(
-    col_types = cols(
-      cmap_name = col_character(),
-      compound_aliases = col_character(),
-      target = col_character(),
-      moa = col_character()
-    )
-  )
 
 compound_names <- syn("syn26260344") %>%
   read_csv() %>%
@@ -237,6 +238,16 @@ fplot <- function( .df, isTop ) {
   gg
 }
 
+## Define transform that min-max normalizes data to between 0 and 1
+## and then applies a logistic transformation
+## Useful for plotting symmetrical data emphasizing points at the extreme ends
+## of the distribution
+logit_p_trans <- function(mi, ma) {
+  scales::trans_new("logit_p",
+            transform = function (x) qlogis((x - mi) / (ma - mi)),
+            inverse   = function (x) ((ma - mi) * plogis(x)) + mi)
+}
+
 ggs <- map2( split(R_plotting, R_plotting$region), c(TRUE,FALSE), fplot )
 ggcomp <- egg::ggarrange( plots=ggs, ncol=1, heights=c(0.5,0.5), draw=FALSE )
 
@@ -291,31 +302,33 @@ ggsave(
 #             # breaks = asinh_breaks)
 # }
 
-## Define transform that min-max normalizes data to between 0 and 1
-## and then applies a logistic transformation
-## Useful for plotting symmetrical data emphasizing points at the extreme ends
-## of the distribution
-logit_p_trans <- function(mi, ma) {
-  scales::trans_new("logit_p",
-            transform = function (x) qlogis((x - mi) / (ma - mi)),
-            inverse   = function (x) ((ma - mi) * plogis(x)) + mi)
-}
+
 
 # MCF-7 vs all others t-test
 r <- R_plotting %>%
-  group_by(name) %>%
+  group_by(lspci_id, name) %>%
   summarize(
     res = t.test(
       tau[cells_target != "MCF-7"], mu = tau[cells_target == "MCF-7"],
       alternative = "less"
     ) %>%
       broom::tidy() %>%
-      list()
+      list(),
+    .groups = "drop"
   ) %>%
   unnest(res)
 
 # ggplot(R_plotting, aes(x = tau/2, y = name, color = Tissue)) +
-p <- ggplot(R_plotting, aes(x = tau, y = name, color = if_else(cells_target == "MCF-7", "MCF-7", "other cell lines"))) +
+p <- R_plotting %>%
+  mutate(
+    name = factor(
+      name,
+      levels = r %>%
+        arrange(p.value) %>%
+        pull(name)
+    )
+  ) %>%
+  ggplot(aes(x = tau, y = name, color = if_else(cells_target == "MCF-7", "MCF-7", "other cell lines"))) +
   geom_quasirandom(groupOnX = FALSE, width = 0.2, data = ~filter(.x, cells_target != "MCF-7")) +
   geom_point(data = ~filter(.x, cells_target == "MCF-7"), size = 2) +
   # geom_text(
@@ -340,7 +353,7 @@ p <- ggplot(R_plotting, aes(x = tau, y = name, color = if_else(cells_target == "
     plot.margin = unit(c(8, 0, 8, 8), "pt"),
     legend.position = "top"
   ) +
-  labs(y = "3' DGE Query Signature", x = "Tau", color = NULL)
+  labs(y = "MCF-7 3' DGE Query Signature", x = "Tau", color = NULL)
   # egg::ggarrange(
   #   geom_text(
   #     aes(x = -100, y = name, label = signif(p.value, 2), fontface = if_else(p.value < 0.05, "bold", "plain")),
@@ -354,7 +367,16 @@ p <- ggplot(R_plotting, aes(x = tau, y = name, color = if_else(cells_target == "
   #   aes(label = cells_target), data = ~filter(.x, cells_target == "MCF-7")
   # )
 
-pval_plot <- ggplot(r) +
+pval_plot <- r %>%
+  mutate(
+    name = factor(
+      name,
+      levels = r %>%
+        arrange(p.value) %>%
+        pull(name)
+    )
+  ) %>%
+  ggplot() +
   geom_text(
     aes(x = 0, y = name, label = signif(p.value, 2), fontface = if_else(p.value < 0.05, "bold", "plain")),
     hjust = 0,
@@ -378,3 +400,67 @@ ggcomp <- egg::ggarrange( p, pval_plot, ncol=2, widths = c(8, 3.5), draw=FALSE )
 1 / mean(1 / r$p.value)
 
 ggsave("fig3c.pdf", ggcomp, width = 5, height = 6)
+
+sig_meta <- syn("syn21547101") %>%
+  read_csv()
+
+sig_numbers <- sig_meta %>%
+  filter(lspci_id %in% r$lspci_id, cell_id == "MCF7") %>%
+  distinct(lspci_id, sig_id) %>%
+  count(lspci_id, name = "n_signatures") %>%
+  inner_join(
+    r, by = "lspci_id"
+  )
+
+p <- ggplot(
+  sig_numbers, aes(estimate, n_signatures)
+) +
+  geom_point() +
+  labs(x = "MCF7 Tau score", y = "N CMap signatures")
+
+ggsave("fig3_mcf7_vs_n_cmap_signatures.pdf", p)
+
+
+p <- ggplot(
+  sig_numbers, aes(p.value, n_signatures)
+) +
+  geom_point() +
+  scale_x_log10() +
+  labs(x = "MCF7 vs others p value", y = "N CMap signatures")
+
+ggsave("fig3_mcf7_p_vs_n_cmap_signatures.pdf", p)
+
+
+p <- ggplot(
+  sig_numbers, aes(p.value, n_signatures)
+) +
+  geom_point() +
+  labs(x = "MCF7 vs others t stat", y = "N CMap signatures")
+
+ggsave("fig3_mcf7_tstat_vs_n_cmap_signatures.pdf", p)
+
+sig_numbers_all <- sig_meta %>%
+  filter(lspci_id %in% r$lspci_id) %>%
+  distinct(lspci_id, sig_id, cell_id) %>%
+  count(lspci_id, cell_id, name = "n_signatures") %>%
+  inner_join(
+    R_plotting, by = c("cell_id" = "cells_target", "lspci_id")
+  )
+
+p <- ggplot(
+  sig_numbers_all, aes(tau, n_signatures)
+) +
+  geom_point() +
+  labs(x = "Tau score", y = "N CMap signatures")
+
+ggsave("fig3_mcf7_all_vs_n_cmap_signatures.pdf", p)
+
+p <- ggplot(
+  sig_numbers_all, aes(tau, n_signatures, color = if_else(cell_id == "MCF-7", "MCF7", "other"))
+) +
+  geom_point() +
+  facet_wrap(~name) +
+  scale_x_continuous(limits = c(-100, 100), trans = logit_p_trans(-101, 101)) +
+  labs(x = "Tau score", y = "N CMap signatures")
+
+ggsave("fig3_mcf7_all_facet_vs_n_cmap_signatures.pdf", p, width = 10, height = 10)

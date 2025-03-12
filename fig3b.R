@@ -7,8 +7,8 @@ library(data.table)
 
 synLogin()
 
-# syn <- synExtra::synDownloader("~/data", .cache = TRUE)
-syn <- synExtra::synDownloader("data", .cache = TRUE)
+syn <- synExtra::synDownloader("~/data", .cache = TRUE)
+# syn <- synExtra::synDownloader("data", .cache = TRUE)
 
 dge_gene_sets <- syn("syn25303778") %>%
   qread()

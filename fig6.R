@@ -113,7 +113,6 @@ fgsea_res <- expr_agg %>%
     .groups = "drop"
   )
 
-library(qs)
 qsave(
   fgsea_res,
   "fgsea_res2.qs"
@@ -467,7 +466,14 @@ all_tas_filtered <- all_tas_similarity %>%
   mutate(across(starts_with("DrugID"), ~as.numeric(as.character(.x)))) %>%
   remove_na_iter(DrugID1, DrugID2, Similarity)
 
-XTas <- simorder(all_tas_filtered, Similarity)
+XTas <- simorder(all_tas_filtered, Similarity) %>%
+  arrange(across(starts_with("DrugID"))) %>%
+  mutate(
+    across(
+      starts_with("DrugName"),
+      \(x) fct_inorder(x)
+    )
+  )
 XTau <- simorder( SM, TauSim ) %>%
   filter_reorder(levels(XTas$DrugID1))
 XJcrd <- simorder( SM, JcrdSim ) %>%
@@ -475,7 +481,14 @@ XJcrd <- simorder( SM, JcrdSim ) %>%
 XCor <- simorder(fgsea_cor_df, Correlation) %>%
   filter_reorder(levels(XTas$DrugID1))
 
+fig6_drugs <- XTau %>%
+  distinct(DrugID = DrugID1, DrugName = DrugName1) %>%
+  arrange(DrugID)
 
+write_csv(
+  fig6_drugs,
+  "fig6_drugs.csv"
+)
 
 ## Plot similarity matrices
 ggjcrd <- simplot(filter_reorder(XJcrd, levels(XTau$DrugID1))) + scale_fill_gradientn( colors=palj, limits=c(0,1), name="Gene set\nJaccard\nSimilarity" )
@@ -483,8 +496,6 @@ ggtau  <- simplot(filter_reorder(XTau, levels(XTau$DrugID1))) + scale_fill_gradi
 ggcor  <- simplot(filter_reorder(XCor, levels(XTau$DrugID1)))  + scale_fill_gradientn( colors=pal, limits=c(-1,1), name="GSEA\nPearson\nCorrelation" )
 ggtas  <- simplot(XTas)  +
   scale_fill_gradientn( colors=palj, limits=c(0,1), name="Target\nJaccard\nSimilarity" )
-scale_x_discrete(drop = FALSE) +
-  scale_y_discrete(drop = FALSE)
 
 gg <- egg::ggarrange( plots=list(ggjcrd, ggtau, ggtas, ggcor), ncol=2,
                       labels=c(" A"," B", " C", " D"), padding=unit(2,"line"),
@@ -494,3 +505,146 @@ gg <- egg::ggarrange( plots=list(ggjcrd, ggtau, ggtas, ggcor), ncol=2,
 ##    + draw_plot( gzjcrd, .18, .7, .17, .25 )
 ggsave( "fig6.pdf", gg, width=17, height=13 )
 ggsave( "fig6.png", gg, width=17, height=13 )
+
+
+ggtas_names  <- XTas %>%
+  mutate(
+    DrugID1 = DrugName1,
+    DrugID2 = DrugName2
+  ) %>%
+  simplot()  +
+  scale_fill_gradientn( colors=palj, limits=c(0,1), name="Target\nJaccard\nSimilarity" ) +
+  theme(
+    axis.text.y = element_text()
+  )
+
+ggsave(
+  "fig6_tas_names.pdf",
+  ggtas_names, width = 9, height = 7
+)
+
+
+tas_clusters <- list(
+  cluster_1 = c(
+    "H-89", "DOVITINIB", "TAE-684", "SUNITINIB", "KW-2449", "NINTEDANIB", "FEDRATINIB"
+  ),
+  cluster_2 = c(
+    "TOFACITINIB", "LAPATINIB", "IMATINIB", "GEFITINIB",
+    "ERLOTINIB", "DASATINIB", "AXITINIB"
+  )
+)
+
+library(seriation)
+library(impute)
+
+cluster_df <- function(df, row_var, col_var, value_var) {
+    mat <- df %>%
+        distinct({{row_var}}, {{col_var}}, {{value_var}}) %>%
+        pivot_wider(names_from = {{col_var}}, values_from = {{value_var}}) %>%
+        column_to_rownames(rlang::as_name(rlang::enquo(row_var)))
+    mat_imp <- impute.knn(
+        t(mat), colmax = 0.9999
+    ) %>%
+        chuck("data") %>%
+        t()
+    dist_rows <- dist(mat_imp, method = "euclidian")
+    dist_cols <- dist(t(mat_imp), method = "euclidian")
+    clust_rows <- hclust(dist_rows, method = "average") %>%
+        reorder(dist_rows, method = "olo")
+    clust_cols <- hclust(dist_cols, method = "average") %>%
+        reorder(dist_cols, method = "olo")
+    df %>%
+        mutate(
+            "{{row_var}}" := factor({{row_var}}, levels = clust_rows$labels[clust_rows$order]),
+            "{{col_var}}" := factor({{col_var}}, levels = clust_cols$labels[clust_cols$order])
+        )
+}
+
+
+tas_colors <- c(`1` = "#b2182b", `2` = "#ef8a62", `3` = "#fddbc7", `10` = "#2166ac", `no data` = "#ffffff")
+
+# Function to plot TAS heatmap for a cluster of compounds
+plot_tas_cluster <- function(cluster_name, compounds, tas_data, compound_names_df) {
+  # Get lspci_ids for the compounds in this cluster
+  cluster_ids <- compound_names_df %>%
+    filter(name %in% compounds) %>%
+    pull(lspci_id)
+
+  # Filter TAS data for these compounds
+  cluster_tas <- tas_data %>%
+    filter(lspci_id %in% cluster_ids)
+
+  # Identify targets where at least one compound has TAS <= 3
+  targets_to_include <- cluster_tas %>%
+    filter(tas <= 3) %>%
+    distinct(gene_id, symbol)
+
+  # Filter to only include those targets
+  filtered_tas <- cluster_tas %>%
+    filter(gene_id %in% targets_to_include$gene_id)
+
+  # browser()
+  # Create complete matrix with all compound-target combinations
+  plot_data <- filtered_tas %>%
+    complete(
+      nesting(gene_id, symbol, lspci_target_id),
+      fill = list(tas = NA_integer_)
+    ) %>%
+    # Join compound names for better labels
+    left_join(compound_names_df %>% select(lspci_id, name), by = "lspci_id") %>%
+    cluster_df(
+      row_var = gene_id,
+      col_var = name,
+      value_var = tas
+    ) %>%
+    mutate(
+      # Convert TAS to factor for coloring
+      tas_factor = factor(
+        as.character(tas),
+        levels = names(tas_colors)
+      ) %>%
+        fct_na_value_to_level("no data")
+    )
+
+  id_symbol_ordering <- plot_data %>%
+    distinct(gene_id, symbol) %>%
+    arrange(gene_id)
+
+  # browser()
+  # Create the heatmap
+  ggplot(plot_data, aes(x = name, y = gene_id, fill = tas_factor)) +
+    geom_raster() +
+    scale_fill_manual(values = tas_colors, name = "TAS") +
+    scale_y_discrete(
+      breaks = id_symbol_ordering$gene_id,
+      labels = id_symbol_ordering$symbol
+    ) +
+    labs(
+      title = paste("Target Activity Spectrum -", cluster_name),
+      x = "Compound",
+      y = "Target"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid = element_blank()
+    )
+}
+
+# Generate plots for each cluster
+cluster_heatmaps <- imap(
+  tas_clusters,
+  ~plot_tas_cluster(.y, .x, tas_used, compound_names)
+)
+
+iwalk(
+  cluster_heatmaps,
+  ~ggsave(
+    paste0("target_clusters_tas_", .y, ".png"),
+    .x,
+    width = 6,
+    height = 14
+  )
+)
+
+
