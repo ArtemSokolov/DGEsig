@@ -474,6 +474,7 @@ XTas <- simorder(all_tas_filtered, Similarity) %>%
       \(x) fct_inorder(x)
     )
   )
+
 XTau <- simorder( SM, TauSim ) %>%
   filter_reorder(levels(XTas$DrugID1))
 XJcrd <- simorder( SM, JcrdSim ) %>%
@@ -524,6 +525,8 @@ ggsave(
 )
 
 
+
+
 tas_clusters <- list(
   cluster_1 = c(
     "H-89", "DOVITINIB", "TAE-684", "SUNITINIB", "KW-2449", "NINTEDANIB", "FEDRATINIB"
@@ -559,6 +562,32 @@ cluster_df <- function(df, row_var, col_var, value_var) {
             "{{col_var}}" := factor({{col_var}}, levels = clust_cols$labels[clust_cols$order])
         )
 }
+
+
+# CLuster based on Tau
+XTau <- simorder( SM, TauSim )
+XJcrd <- simorder( SM, JcrdSim ) %>%
+  filter_reorder(levels(XTau$DrugID1))
+XCor <- simorder(fgsea_cor_df, Correlation) %>%
+  filter_reorder(levels(XTau$DrugID1))
+
+## Plot similarity matrices
+ggjcrd <- simplot(XJcrd) + scale_fill_gradientn( colors=palj, limits=c(0,1), name="Gene set\nJaccard\nSimilarity" )
+ggtau  <- simplot(XTau) + scale_fill_gradientn( colors=pal, limits=c(-1,1), name="Tau\nPearson\nCorrelation" )
+ggcor  <- simplot(XCor)  + scale_fill_gradientn( colors=pal, limits=c(-1,1), name="GSEA\nPearson\nCorrelation" )
+ggtas  <- simplot(XTas)  +
+  scale_fill_gradientn( colors=palj, limits=c(0,1), name="Target\nJaccard\nSimilarity" )
+
+gg <- egg::ggarrange( plots=list(ggjcrd, ggtau, ggtas, ggcor), ncol=2,
+                      labels=c(" A"," B", " C", " D"), padding=unit(2,"line"),
+                      label.args = list(gp = grid::gpar(font = 4, cex = 4)) ) #%>%
+##    ggdraw() %>%
+##    + draw_plot( gztau, .68, .7, .17, .25 ) %>%
+##    + draw_plot( gzjcrd, .18, .7, .17, .25 )
+ggsave( "fig6.pdf", gg, width=17, height=13 )
+ggsave( "fig6.png", gg, width=17, height=13 )
+
+
 
 
 tas_colors <- c(`1` = "#b2182b", `2` = "#ef8a62", `3` = "#fddbc7", `10` = "#2166ac", `no data` = "#ffffff")

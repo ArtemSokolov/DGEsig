@@ -1,4 +1,5 @@
 library(tidyverse)
+library(powerjoin)
 # library(DESeq2)
 library(synapser)
 library(here)
@@ -27,7 +28,7 @@ cmap_perturbation_meta <- syn("syn21547097") %>%
   )
 
 cmap_signature_meta <- syn("syn21547101") %>%
-  fread()
+  read_csv()
 
 cmap_gene_meta <- syn("syn21547102") %>%
   fread()
@@ -69,16 +70,34 @@ gene_set_comparison <- dge_gene_sets %>%
         cutoff == 0.7
       ) %>%
       chuck("data", 1) %>%
+      semi_join(
+        dge_gene_sets,
+        by = c("lspci_id", "cell_id" = "cells")
+      ) %>%
       transmute(
         technique = "l1000", lspci_id, cells = cell_id, replicate,
-        gene_set = as.list(gene_set_table) %>%
-          map(merge, select(cmap_gene_meta, pr_gene_id, entrezgene_id = entrez_id), by = "pr_gene_id") %>%
-          map(~transmute(.x, direction, score = abs(zscore), entrezgene_id))
+        gene_set = map(
+          gene_set_table,
+          \(x) power_inner_join(
+            x,
+            select(cmap_gene_meta, pr_gene_id, entrezgene_id = entrez_id),
+            by = "pr_gene_id",
+            check = check_specs(
+              unmatched_keys_left = "warn",
+              duplicate_keys_right = "warn"
+            )
+          ) %>%
+            transmute(direction, score = abs(zscore), entrezgene_id)
+        )
       ) %>%
-      inner_join(
+      power_inner_join(
         cmap_signature_meta %>%
           distinct(replicate = sig_id, time = pert_time),
-        by = "replicate"
+        by = "replicate",
+        check = check_specs(
+          unmatched_keys_left = "warn",
+          duplicate_keys_right = "warn"
+        )
       )
   ) %>%
   arrange(technique, desc(time)) %>%
@@ -142,6 +161,7 @@ gene_set_comparison_upset_data <- gene_set_comparison_venn_data %>%
     by = "lspci_id"
   ) %>%
   filter(
+    # make sure that there are at least two replicates for dge and l1000
     map_lgl(venn_data, ~{tbl <- table(.x[["technique"]]); length(tbl) >= 2 && all(tbl >= 2)})
   ) %>%
   mutate(

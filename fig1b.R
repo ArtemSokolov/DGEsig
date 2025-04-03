@@ -132,7 +132,7 @@ dataset_names <- tribble(
 ) %>%
   mutate(across(c(dataset_name), fct_inorder))
 
-meta_table <- meta %>%
+meta_filtered <- meta %>%
   filter(!dataset %in% c("fp_transdiff")) %>%
   inner_join(dataset_names, by = c("dataset", "date")) %>%
   unnest(meta) %>%
@@ -147,7 +147,23 @@ meta_table <- meta %>%
       ) | drug == "control",
       TRUE
     )
+  )
+
+meta_filtered %>%
+  distinct(
+    dataset, dataset_name, cells
   ) %>%
+  View()
+
+meta_cell_lines <- tribble(
+  ~dataset, ~date, ~cells,
+  "jsm_merck", "2017_09", "Myofibroblasts",
+  "ld_dub", "2018_06", "MCF7",
+  "lincs_cdk4_6_7", "2017_09", "7 breast cancer lines",
+  "lincs_cdk4_6_7", "2019_08", "7 breast cancer lines",
+)
+
+meta_table <- meta_filtered %>%
   group_by(dataset, dataset_name, date) %>%
   summarize(
     `n samples` = n(),
@@ -161,10 +177,8 @@ meta_table <- meta %>%
       select(dataset, date, total_counts, n_detectable) %>%
       group_by(dataset, date) %>%
       summarize(
-        `median sequencing depth` = median(total_counts) %>%
-          as.integer(),
-        `median genes detected` = median(n_detectable) %>%
-          as.integer()
+        `median sequencing depth` = signif(median(total_counts) / 1e5, 2),
+        `median genes detected` = signif(median(n_detectable) / 1e3, 2)
       ),
     by = c("dataset", "date")
   ) %>%
@@ -177,16 +191,19 @@ meta_table_gt <- meta_table %>%
   tab_options(column_labels.font.weight = "bold") %>%
   cols_align("right") %>%
   cols_align("left", columns = vars(` `)) %>%
-  fmt_number(
-    columns = tidyselect::eval_select(rlang::expr(where(is.numeric)), meta_table),
-    use_seps = TRUE,
-    sep_mark = ",",
-    decimals = 0
+  cols_label(
+    `median sequencing depth` ~ "Median sequencing depth x{{10^5}}",
+    `median genes detected` ~ "Median genes detected x{{10^3}}"
   )
+  # fmt_number(
+  #   columns = tidyselect::eval_select(rlang::expr(where(is.numeric)), meta_table),
+  #   use_seps = TRUE,
+  #   sep_mark = ",",
+  #   decimals = 0
+  # )
 
 gtsave(
   meta_table_gt,
   file.path(wd, "fig1b.html")
 )
-
 

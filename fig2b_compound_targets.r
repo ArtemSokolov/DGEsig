@@ -6,6 +6,7 @@ library(qs)
 library(magrittr)
 library(data.table)
 library(powerjoin)
+library(seriation)
 
 pathData <- "~/data"
 
@@ -119,6 +120,7 @@ cmap_returned <- filter(cmap_meta, pert_id %in% R$pert_id)$lspci_id %>%
   na.omit()
 
 
+
 dge_queried <- filter(
   dge_gene_sets,
   gene_set_id %in% R$gene_set,
@@ -200,260 +202,42 @@ R2 <- gene_set_meta %>%
     by = c("lspci_id_t" = "lspci_id")
   )
 
-R2_by_cell <- gene_set_meta %>%
-  drop_na(lspci_id) %>%
-  filter(
-    # cell_aggregate_method == "per_cell_line" | is.na(cell_aggregate_method),
-    # replicate_method == "replicates_aggregated" | is.na(replicate_method),
-    # concentration_method == "concentration_aggregated" | is.na(concentration_method),
-    cutoff == 0.7 | is.na(cutoff),
-    is.na(stim)
-  ) %>%
-  rename(
-    lspci_id_q = lspci_id, cells_q = cells
-  ) %>%
-  distinct() %>%
-  inner_join(
-    R_all %>%
-      filter( result_type == "pert", score_level == "cell" ) %>%
-      pluck( "data", 1 ) %>%
-      filter(cell_id == "MCF7") %>%
-      rename(cells_t = cell_id),
-    by = c("gene_set_id" = "gene_set")
-  ) %>%
-  left_join(
-    cmap_meta %>%
-      distinct(pert_id, lspci_id_t = lspci_id),
-    by = "pert_id"
-  ) %>%
-  # For some reason, CMap sometimes returns multiple independent connectivities
-  # of the same query and target compound. Probably replicate signatures
-  # on their side?
-  # Aggregating by taking the 33- or 66-percentile, whichever has
-  # higher absolute value. Approach used by CMap to aggregate cell lines
-  group_by(source, cell_aggregate_method, replicate_method, concentration_method, lspci_id_q, lspci_id_t, cells_q, cells_t, cutoff) %>%
-  summarize(
-    tau = quantile(tau, c(0.67, 0.33), names = FALSE, na.rm = TRUE) %>%
-      {.[order(abs(.))[2]]},
-    # tau = mean(tau),
-    .groups = "drop"
-  ) %>%
-  left_join(
-    compound_names %>%
-      rename(name_q = name),
-    by = c("lspci_id_q" = "lspci_id")
-  ) %>%
-  left_join(
-    compound_names %>%
-      rename(name_t = name),
-    by = c("lspci_id_t" = "lspci_id")
-  )
-
-
-## Isolate the appropriate slice of data
-## Aggregate across multiple entries to compute master similarity score
-R2_mcf7_cmap <- R_cmap_mcf7 %>%
-  mutate(
-    cells_q = "MCF7"
-  ) %>%
-  rename(cells_t = cell_id) %>%
-  select(starts_with("lspci_id"), starts_with("cells"), tau) %>%
-  drop_na(starts_with("lspci_id")) %>%
-  group_by(across(-tau)) %>%
-  summarize(tau = mean(tau), .groups = "drop") %>%
-  left_join(
-    compound_names %>%
-      rename(name_q = name),
-    by = c("lspci_id_q" = "lspci_id")
-  ) %>%
-  left_join(
-    compound_names %>%
-      rename(name_t = name),
-    by = c("lspci_id_t" = "lspci_id")
-  )
-
 cluster_mat <- function(df) {
-  # Start off with data where replicates, cells, and concentrations aggregated and
-  # using a z-threshold of 0.7
-  lspci_id_common <- intersect(df$lspci_id_t, df$lspci_id_q)
-  R3 <- df %>%
-    filter(
-      lspci_id_t %in% lspci_id_common,
-      lspci_id_q %in% lspci_id_common
-    ) %>%
-    mutate(
-      name_q = str_trunc(name_q, 16, ellipsis = "…"),
-      name_t = str_trunc(name_t, 16, ellipsis = "…")
-    )
-
   ## Perform hierarchical clustering on drugT profiles (columns in the final plot)
   ## Use the DGE slice because it is cleaner and less saturated
-  R3_mat <- R3 %>% filter(source == "dge") %>% select( name_q, name_t, tau ) %>%
-    # IKK16 slipped through. It was profiled with DGE but
-    # it's signature for whatever reason didn't return results in CMap
-    # (too few genes?). L1000 signature was succesfull
-    filter(name_q != "IKK16", name_t != "IKK16") %>%
-    pivot_wider( names_from = name_t, values_from = tau ) %>%
-    column_to_rownames("name_q") %>% as.matrix()
-  # We want to cluster both rows and cols but want them ordered
-  # identically. Just adding distance matrices of matrix and it's transpose
-  # DM <- R3_mat %>% t() %>% dist()
-  DM <- (R3_mat %>% t() %>% dist()) +
-    R3_mat %>% dist()
-  lvl <- hclust(DM) %>% reorder(DM) %>%  dendextend::order.hclust() %>% labels(DM)[.]
+  R3_mat <- df %>%
+    select(name_q, name_t, tau) %>%
+    pivot_wider(names_from = name_t, values_from = tau) %>%
+    column_to_rownames("name_q") %>%
+    as.matrix()
+  # Just cluster
+  DM_rows <- dist(R3_mat)
+  clust_rows <- hclust(DM_rows, method = "average") %>%
+    reorder(DM_rows, method = "OLO")
+  DM_cols <- dist(t(R3_mat))
+  clust_cols <- hclust(DM_cols, method = "average") %>%
+    reorder(DM_cols, method = "OLO")
+  lvl_rows <- clust_rows$labels[clust_rows$order]
+  lvl_cols <- clust_cols$labels[clust_cols$order]
 
   ## Fix the order via factor levels
-  R4 <- R3 %>% mutate(name_q = factor(name_q, lvl),
-                      name_t = factor(name_t, rev(lvl)))
+  R4 <- df %>% mutate(name_q = factor(name_q, lvl_rows),
+                      name_t = factor(name_t, rev(lvl_cols)))
+  R4
+}
 
+complete_df <- function(df) {
   # Complete missing observations at z-scores that yielded insufficient
   # genes for Clue with NA
   R4_completed <- bind_rows(
-    R4 %>%
+    df %>%
       filter(source == "dge"),
-    R4 %>%
+    df %>%
       filter(source == "l1000") %>%
       complete(nesting(lspci_id_q, lspci_id_t, name_q, name_t, source), cutoff)
-  ) %>%
-    # IKK16 slipped through. It was profiled with DGE but
-    # it's signature for whatever reason didn't return results in CMap
-    # (too few genes?). L1000 signature was succesfull
-    filter(name_q != "IKK16", name_t != "IKK16")
+  )
   R4_completed
 }
-
-R4_neuro <- R2_by_cell %>%
-  filter(cells_q == "rencell") %>%
-  cluster_mat()
-
-p_neuro_query <- fplot(R4_neuro) +
-  labs(x = "CMap signature", y = "DGE query")
-
-ggsave(
-  "fig2_neuro_query.pdf", p_neuro_query, width = 7, height = 7
-)
-
-R4_neuro_query_cmap_mcf7 <- R2_mcf7_cmap %>%
-  semi_join(
-    R4_neuro, by = c("lspci_id_q", "lspci_id_t")
-  ) %>%
-  # just a workaround so that the function chooches it's actually l1000
-  mutate(source = "dge", cutoff = 0.7) %>%
-  cluster_mat() %>% {
-    levels(.$name_q) <- levels(R4_neuro$name_q)
-    levels(.$name_t) <- levels(R4_neuro$name_t)
-    .
-  }
-
-p_neuro_query_cmap_mcf7 <- fplot(R4_neuro_query_cmap_mcf7) +
-  labs(x = "CMap signature", y = "L1000 query")
-ggsave(
-  "fig2_neuro_query_cmap_mcf7.pdf", p_neuro_query_cmap_mcf7, width = 7, height = 7
-)
-
-
-R4_mcf7 <- R2_by_cell %>%
-  filter(cells_q == "MCF7") %>%
-  cluster_mat()
-
-p_mcf7_query <- fplot(R4_mcf7) +
-  labs(x = "CMap signature", y = "DGE query")
-ggsave(
-  "fig2_mcf7_query.pdf", p_mcf7_query, width = 6, height = 6
-)
-
-R4_mcf7_cmap <- R2_mcf7_cmap %>%
-  semi_join(
-    R4_mcf7, by = c("lspci_id_q", "lspci_id_t")
-  ) %>%
-  # just a workaround so that the function chooches it's actually l1000
-  mutate(source = "dge", cutoff = 0.7) %>%
-  cluster_mat() %>% {
-    levels(.$name_q) <- union(intersect(levels(R4_mcf7$name_q), levels(.$name_q)), levels(.$name_q))
-    levels(.$name_t) <- union(intersect(levels(R4_mcf7$name_t), levels(.$name_t)), levels(.$name_t))
-    .
-  }
-
-p_mcf7_cmap <- fplot(R4_mcf7_cmap) +
-  labs(x = "CMap signature", y = "L1000 query")
-ggsave(
-  "fig2_mcf7_cmap_query.pdf", p_mcf7_cmap, width = 6, height = 6
-)
-
-neuro_mcf7_overlap <- intersect(
-  R2_by_cell %>%
-    filter(cells_q == "MCF7") %>%
-    pull(lspci_id_q),
-  R2_by_cell %>%
-    filter(cells_q == "rencell") %>%
-    pull(lspci_id_q)
-)
-R4_neuro_both <- R2_by_cell %>%
-  filter(cells_q == "rencell", lspci_id_q %in% neuro_mcf7_overlap) %>%
-  cluster_mat()
-p_neuro_query_both <- fplot(R4_neuro_both)
-ggsave(
-  "fig2_neuro_query_both.pdf", p_neuro_query_both, width = 6, height = 5
-)
-R4_mcf7_both <- R2_by_cell %>%
-  filter(cells_q == "MCF7", lspci_id_q %in% neuro_mcf7_overlap) %>%
-  cluster_mat()
-
-p_mcf7_query_both <- fplot(R4_mcf7_both)
-ggsave(
-  "fig2_mcf7_query_both.pdf", p_mcf7_query_both, width = 6, height = 5
-)
-
-# Beeswarm plots for all
-beeswarm_plots <- tribble(
-  ~name, ~data,
-  "neuro_query", R4_neuro,
-  "neuro_query_cmap_mcf7", R4_neuro_query_cmap_mcf7,
-  "mcf7_query", R4_mcf7,
-  "mcf7_query_cmap_mcf7", R4_mcf7_cmap
-) %>%
-  mutate(
-    plot = map(
-      data,
-      ~.x %>%
-        filter(
-          lspci_id_q != lspci_id_t
-        ) %>%
-        ggplot(
-          aes(1, tau)
-        ) +
-        geom_quasirandom(
-          # shape = 21,
-          # size = 1,
-          # # color = "NA",
-          # method = "quasirandom",
-          # bandwidth = 0.2,
-          # width = 0.5
-        ) +
-        theme_light() +
-        theme_bold() +
-        theme(
-          strip.background = element_blank(),
-          strip.text = element_blank(),
-          panel.border = element_blank(),
-          panel.grid.major.x = element_blank(),
-          axis.title.x = element_blank(),
-          axis.text.x = element_blank()
-        ) +
-        # scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
-        labs(x = NULL, y = "Tau")
-    )
-  )
-
-pwalk(
-  beeswarm_plots,
-  function(name, plot, ...) {
-    ggsave(
-      file.path(wd, paste0(name, "_beeswarm.pdf")),
-      plot, width = 2, height = 5
-    )
-  }
-)
 
 
 # Start off with data where replicates, cells, and concentrations aggregated and
@@ -463,48 +247,44 @@ R3 <- R2 %>%
     cell_aggregate_method == "cells_aggregated" | is.na(cell_aggregate_method),
     replicate_method == "replicates_aggregated" | is.na(replicate_method),
     concentration_method == "concentration_aggregated" | is.na(concentration_method),
-    # cutoff == 0.7 | is.na(cutoff),
-    lspci_id_t %in% qcom,
-    lspci_id_q %in% qcom
+    source == "dge" | (source == "l1000" & cutoff == 0.7)
   ) %>%
   mutate(
     name_q = str_trunc(name_q, 16, ellipsis = "…"),
     name_t = str_trunc(name_t, 16, ellipsis = "…")
   )
 
-## Perform hierarchical clustering on drugT profiles (columns in the final plot)
-## Use the DGE slice because it is cleaner and less saturated
-R3_mat <- R3 %>% filter(source == "dge") %>% select( name_q, name_t, tau ) %>%
-  # IKK16 slipped through. It was profiled with DGE but
-  # it's signature for whatever reason didn't return results in CMap
-  # (too few genes?). L1000 signature was succesfull
-  # filter(name_q != "IKK16", name_t != "IKK16") %>%
-  pivot_wider( names_from = name_t, values_from = tau ) %>%
-  column_to_rownames("name_q") %>% as.matrix()
-# We want to cluster both rows and cols but want them ordered
-# identically. Just adding distance matrices of matrix and it's transpose
-# DM <- R3_mat %>% t() %>% dist()
-DM <- (R3_mat %>% t() %>% dist()) +
-  (R3_mat %>% dist())
-lvl <- hclust(DM) %>% reorder(DM) %>%  dendextend::order.hclust() %>% labels(DM)[.]
 
-## Fix the order via factor levels
-R4 <- R3 %>% mutate(name_q = factor(name_q, lvl),
-                    name_t = factor(name_t, rev(lvl)))
+# Select which drugs to show
 
-# Complete missing observations at z-scores that yielded insufficient
-# genes for Clue with NA
-R4_completed <- bind_rows(
-  R4 %>%
-    filter(source == "dge"),
-  R4 %>%
-    filter(source == "l1000") %>%
-    complete(nesting(lspci_id_q, lspci_id_t, name_q, name_t, source), cutoff)
-) %>%
-  # IKK16 slipped through. It was profiled with DGE but
-  # it's signature for whatever reason didn't return results in CMap
-  # (too few genes?). L1000 signature was succesfull
-  filter(name_q != "IKK16", name_t != "IKK16")
+R4 <- R3 %>%
+  filter(
+    lspci_id_t %in% {
+      R3 %>%
+        group_by(
+          source,
+          lspci_id_q
+        ) %>%
+        arrange(desc(abs(tau))) %>%
+        slice(5) %>%
+        pull("lspci_id_t")
+    }
+  )
+
+R4_clustered <- R4 %>%
+  drop_na(tau) %>%
+  filter(source == "dge") %>%
+  cluster_mat()
+R4_clustered <- R4 %>%
+  mutate(
+    name_q = factor(name_q, levels = levels(R4_clustered$name_q)),
+    name_t = factor(name_t, levels = levels(R4_clustered$name_t))
+  ) %>%
+  drop_na(tau, name_q)
+
+R4_clustered %>%
+  arrange(name_q, desc(abs(tau)))
+
 
 ## Plotting elements
 pal <- rev(RColorBrewer::brewer.pal(n=7, name="RdBu"))
@@ -518,13 +298,33 @@ theme_bold <- function() {
 
 ## Plotting a heatmap of clue hits
 fplot <- function(X) {
-  ggplot( X, aes(x=name_t, y=name_q, fill=tau) ) +
+  library(ggtext)
+  X_ <- X %>%
+    arrange(name_q) %>%
+    mutate(
+      name_q_color = paste0(
+        "<span style=\"color:",
+        if_else(
+          as.character(name_q) %in% as.character(name_t),
+          "#ff0000", "#000000"
+        ),
+        "\">",
+        name_q,
+        "</span>"
+      ),
+      across(name_q_color, fct_inorder)
+    )
+  # browser()
+  ggplot( X_, aes(x=name_t, y=name_q_color, fill=tau) ) +
     theme_minimal() + theme_bold() +
-    geom_tile(color="black") +
-    geom_tile(data=filter(X, name_q==name_t), color="black", size=1) +
+    geom_tile() +
+    geom_tile(data=filter(X_, as.character(name_q)==as.character(name_t)), color="black", size=1) +
     scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
     # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
-    xlab( "CMap Target" )
+    xlab( "CMap Target" ) +
+    theme(
+      axis.text.y = ggtext::element_markdown()
+    )
 }
 
 composite_plot <- function(X) {
@@ -543,196 +343,136 @@ composite_plot <- function(X) {
     # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
     # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100)) +
     theme(legend.position = "bottom",
-          plot.margin = margin(r = 0.25, l = 0.25, unit = "in"))
-  #
-  #     cell_plot <- X %>%
-  #         distinct(drugQ, cell_id_query) %>%
-  #         # unchop(cell_id_query) %>%
-  #         mutate(
-  #             cell_id_query = map_chr(
-  #                 cell_id_query,
-  #                 ~if (is.null(.x) || length(.x) == 1) .x %||% "" else "multiple"
-  #             )
-  #         ) %>%
-  #         drop_na() %>%
-  #         ggplot(aes(drugQ, fill = cell_id_query)) +
-  #             geom_bar() +
-  #             coord_flip() +
-  #             theme_minimal() + theme_bold() +
-  #             scale_fill_brewer(palette = "Set2", name = "Query cell line") +
-  #             theme(
-  #                 # axis.ticks.y = element_blank(), axis.text.y = element_blank(),
-  #                 # axis.title.y = element_blank(), axis.title.x = element_blank(),
-  #                 axis.title = element_blank(), axis.ticks = element_blank(),
-  #                 axis.text.x = element_blank(), axis.text.y = element_blank()
-  #             )
-
-  ## Summary plot
-  S <- X %>% filter(name_q == name_t) %>%
-    mutate_at("source", factor, levels=c("l1000","dge")) %>%
-    mutate_at("source", fct_recode, `Self (3' DGE)`="dge", `Self (L1000)`="l1000")
-  ggs <- ggplot( S, aes(x=name_t, y=source, fill=tau) ) +
-    theme_minimal() + theme_bold() +
-    geom_tile(color="black") + ylab("") +
-    scale_fill_gradientn( colors=pal, guide=FALSE, limits=c(-100,100) ) +
-    # exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, guide = FALSE, limits = c(-100, 100)) +
-    theme(axis.text.x = element_blank(), axis.title.x = element_blank())
+          plot.margin = margin(r = 0.25, l = 0.25, t = .125, unit = "in"))
 
   ## Create the composite plot
-  egg::ggarrange( gg1, ggs, gg2, heights=c(7.5,0.5,7.5), widths = c(7), draw=FALSE )
+  egg::ggarrange(
+    gg1 + coord_equal(),
+    gg2 + coord_equal(),
+    heights=c(7.5,7), widths = c(7), draw=FALSE
+  )
 }
 
-write_csv(
-  R4, file.path(wd, "2b_data.csv")
-)
-
-
-
-
-ggcomp <- R4_completed %>%
-  filter( source == "l1000" ) %>%
-  group_nest( cutoff ) %>%
-  mutate(
-    data = map(
-      data,
-      bind_rows,
-      filter( R4_completed, source == "dge")
-    ) %>%
-      map(composite_plot)
-  )
-
+p <- composite_plot(R4_clustered)
 ggsave(
-  "fig2_summary_target_mean_query.pdf",
-  ggcomp$data[[1]], width = 10, height = 18
+  file.path(wd, "fig2b_compound_targets_top5_both.pdf"),
+  p, width = 22, height = 26
 )
 
+# Only positive Tau
 
-pwalk(
-  ggcomp,
-  function(cutoff, query_type, data, ...) {
-    walk(
-      file.path(
-        wd,
-        paste0("fig2_mcf7_target_", cutoff, c(".png", ".pdf"))
-      ),
-      ggsave, data, width=10, height=18 )
-  }
-)
-
-gg2 <- filter(R3, source == "l1000", cutoff == 0.7 ) %>%
-  mutate(source = "dge") %>%
-  cluster_mat() %>%
-  fplot() +
-  ylab( "L1000 Query" ) +
-  # scale_fill_gradientn( colors=pal, name="Tau", limits=c(-100,100) ) +
-  exec(scale_fill_gradientn, !!!cmap_nonlinear_colormap, name = "Tau", limits = c(-100, 100))
-
-ggsave(
-  "fig2b_l1000_only_cmap_colormap.pdf", gg2, width = 10, height = 9
-)
-
-
-# Scatterplot asymmetry
-
-R4_completed_scatter <- R4_completed %>%
-  # Keep all relevant identifiers
-  transmute(
-    cutoff,
-    source,
-    lspci_id_q,
-    lspci_id_t,
-    name_q,
-    name_t,
-    tau
-  ) %>%
-  # Create a consistent pair identifier regardless of query/target direction
-  mutate(
-    # Create ordered pair identifier to match reciprocal comparisons
-    # pair_id = pmap_chr(list(lspci_id_q, lspci_id_t), ~paste(sort(c(...)), collapse = "_")),
-    pair_id = pmap_chr(list(name_q, name_t), ~paste(sort(map_int(list(...), as.integer)), collapse = "_")),
-    # Mark direction within each pair
-    direction = if_else(
-      # as.character(lspci_id_q) < as.character(lspci_id_t),
-      as.integer(name_q) > as.integer(name_t),
-      "forward",
-      "reverse"
-    )
-  ) %>%
-  # Remove self-comparisons
-  filter(lspci_id_q != lspci_id_t) %>%
-  # Pivot to get forward and reverse values side by side
-  pivot_wider(
-    id_cols = c(cutoff, source, pair_id),
-    names_from = direction,
-    values_from = c(name_q, name_t, lspci_id_q, lspci_id_t, tau)
-  )
-
-p <- R4_completed_scatter %>%
+# Select which drugs to show
+R4 <- R3 %>%
   filter(
-    cutoff == 0.7 | is.na(cutoff)
-  ) %>%
-  mutate(
-    across(
-      source,
-      \(x) recode(x, "dge" = "DGE", "l1000" = "L1000")
-    )
-  ) %>%
-  ggplot(
-    aes(tau_forward, tau_reverse)
-  ) +
-  geom_point(alpha = .5, shape = 16) +
-  # theme_light() +
-  theme_bold() +
-  # geom_abline() +
-  facet_wrap(vars(source), ncol = 1) +
-  coord_equal() +
-  labs(
-    x = "Tau forward",
-    y = "Tau reverse"
+    lspci_id_t %in% {
+      R3 %>%
+        group_by(
+          source,
+          lspci_id_q
+        ) %>%
+        arrange(desc(tau)) %>%
+        slice(5) %>%
+        pull("lspci_id_t")
+    }
   )
 
+R4_clustered <- R4 %>%
+  drop_na(tau) %>%
+  filter(source == "dge") %>%
+  cluster_mat()
+R4_clustered <- R4 %>%
+  mutate(
+    name_q = factor(name_q, levels = levels(R4_clustered$name_q)),
+    name_t = factor(name_t, levels = levels(R4_clustered$name_t))
+  ) %>%
+  drop_na(tau, name_q)
+
+R4_clustered %>%
+  arrange(name_q, desc(abs(tau)))
+
+p <- composite_plot(R4_clustered)
 ggsave(
-  "fig2b_asymmetry_scatter.pdf", p, width = 3.5, height = 5
+  file.path(wd, "fig2b_compound_targets_top5_both_pos.pdf"),
+  p, width = 22, height = 26
 )
 
 
-# Test if self-similarity is significantly higher than other similarities
-
-wilcox_self_similarities <- R3 %>%
-  group_by(source, cutoff, lspci_id_q, name_q) %>%
-  summarize(
-    wilcox = wilcox.test(
-      tau[lspci_id_q != lspci_id_t],
-      mu = tau[lspci_id_q == lspci_id_t],
-      alternative = "less"
-    ) %>%
-      list(),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    p.value = map_dbl(wilcox, "p.value")
+# Only targets of DGE queries
+R4 <- R3 %>%
+  filter(
+    lspci_id_t %in% {
+      R3 %>%
+        filter(source == "dge") %>%
+        group_by(
+          source,
+          lspci_id_q
+        ) %>%
+        arrange(desc(abs(tau))) %>%
+        slice(5) %>%
+        pull("lspci_id_t")
+    }
   )
 
-wilcox_self_similarities %>%
-  count(cutoff, source, significant = p.value < 0.05) %T>%
-  write_csv(file.path(wd, "wilcox_table.csv"))
+R4_clustered <- R4 %>%
+  filter(source == "dge") %>%
+  cluster_mat()
+R4_clustered <- R4 %>%
+  mutate(
+    name_q = factor(name_q, levels = levels(R4_clustered$name_q)),
+    name_t = factor(name_t, levels = levels(R4_clustered$name_t))
+  ) %>%
+  complete_df()
 
-# 24 out of 32 DGE profiles show significant self-similarity
+R4_clustered %>%
+  arrange(name_q, desc(abs(tau)))
+
+p <- composite_plot(R4_clustered)
+ggsave(
+  file.path(wd, "fig2b_compound_targets_top5_dge.pdf"),
+  p, width = 15, height = 24
+)
+
+
+# Only targets of DGE queries, only pos
+R4 <- R3 %>%
+  filter(
+    lspci_id_t %in% {
+      R3 %>%
+        filter(source == "dge") %>%
+        group_by(
+          source,
+          lspci_id_q
+        ) %>%
+        arrange(desc(tau)) %>%
+        slice(5) %>%
+        pull("lspci_id_t")
+    }
+  )
+
+R4_clustered <- R4 %>%
+  filter(source == "dge") %>%
+  cluster_mat()
+R4_clustered <- R4 %>%
+  mutate(
+    name_q = factor(name_q, levels = levels(R4_clustered$name_q)),
+    name_t = factor(name_t, levels = levels(R4_clustered$name_t))
+  ) %>%
+  complete_df()
+
+R4_clustered %>%
+  arrange(name_q, desc(abs(tau)))
+
+p <- composite_plot(R4_clustered)
+ggsave(
+  file.path(wd, "fig2b_compound_targets_top5_dge_pos.pdf"),
+  p, width = 15, height = 24
+)
+
 
 library(ggbeeswarm)
 
-## Define transform that min-max normalizes data to between 0 and 1
-## and then applies a logistic transformation
-## Useful for plotting symmetrical data emphasizing points at the extreme ends
-## of the distribution
-logit_p_trans <- function(mi, ma) {
-  scales::trans_new("logit_p",
-                    transform = function (x) qlogis((x - mi) / (ma - mi)),
-                    inverse   = function (x) ((ma - mi) * plogis(x)) + mi)
-}
-
-self_similarity_beeswarm_data <- R4 %>%
-  filter(is.na(cutoff) | cutoff == 0.7) %>%
+self_similarity_beeswarm_data <- R3 %>%
+  # filter(is.na(cutoff) | cutoff == 0.7) %>%
   mutate(
     self_similarity = if_else(
       lspci_id_q == lspci_id_t,
@@ -743,63 +483,8 @@ self_similarity_beeswarm_data <- R4 %>%
   ) %>%
   arrange(self_similarity)
 
-self_similarity_beeswarm_plot <- self_similarity_beeswarm_data %>%
-  ggplot(
-    aes(tau, name_q, color = self_similarity)
-  ) +
-  geom_quasirandom(
-    data = ~filter(.x, self_similarity == "cross_similarity"),
-    groupOnX = FALSE
-  ) +
-  geom_point(
-    data = ~filter(.x, self_similarity == "self_similarity")
-  ) +
-  facet_wrap(~source, nrow = 1) +
-  scale_color_manual(
-    values = c(
-      self_similarity = "#FF0000",
-      cross_similarity = "#00000088"
-    ),
-    guide = FALSE
-  ) +
-  scale_x_continuous(trans = logit_p_trans(-101, 101))
-
-ggsave(
-  file.path(wd, "similarity_beeswarm_separate.pdf"),
-  self_similarity_beeswarm_plot, width = 6, height = 9
-)
-# GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin,
-#                            draw_group = function(self, data, ..., draw_quantiles = NULL) {
-#   data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
-#   grp <- data[1, "group"]
-#   newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
-#   newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
-#   newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
-
-#   if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
-#     stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
-#       1))
-#     quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
-#     aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
-#     aesthetics$alpha <- rep(1, nrow(quantiles))
-#     both <- cbind(quantiles, aesthetics)
-#     quantile_grob <- GeomPath$draw_panel(both, ...)
-#     ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
-#   }
-#   else {
-#     ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
-#   }
-# })
-
-# geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ...,
-#                               draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE,
-#                               show.legend = NA, inherit.aes = TRUE) {
-#   layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin,
-#         position = position, show.legend = show.legend, inherit.aes = inherit.aes,
-#         params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
-# }
-
 # This is NOT self-similarity, it's the whole query-target similarity
+# ALL targets, violing version
 self_similarity_beeswarm_split <- self_similarity_beeswarm_data %>%
   mutate(
     across(
@@ -810,15 +495,21 @@ self_similarity_beeswarm_split <- self_similarity_beeswarm_data %>%
   ggplot(
     aes(source, tau, color = self_similarity, size = self_similarity)
   ) +
+  geom_violin(
+    data = ~filter(.x, self_similarity == "cross_similarity"),
+    fill = "black",
+    color = alpha("black", .8),
+    scale = "width"
+  ) +
   geom_quasirandom(
-    # data = ~filter(.x, self_similarity == "cross_similarity"),
+    data = ~filter(.x, self_similarity == "self_similarity"),
     shape = 16,
     # size = 1,
     # color = "NA",
     method = "quasirandom",
     bandwidth = 0.2,
     width = 0.45,
-    alpha = .8
+    alpha = .5
   ) +
   # geom_beeswarm(
   #     data = ~filter(.x, self_similarity == "cross_similarity"),
@@ -856,13 +547,13 @@ self_similarity_beeswarm_split <- self_similarity_beeswarm_data %>%
   labs(x = "Query source", y = "Tau")
 
 ggsave(
-  file.path(wd, "fig2b_self_similarity_beeswarm_agg_side_by_side.pdf"),
+  file.path(wd, "fig2b_compound_targets_self_similarity_beeswarm_agg_side_by_side.pdf"),
   self_similarity_beeswarm_split,
   width = 2.5, height = 4
 )
 
 ggsave(
-  file.path(wd, "fig2b_self_similarity_beeswarm_agg_linear.pdf"),
+  file.path(wd, "fig2b_compound_targets_self_similarity_beeswarm_agg_linear.pdf"),
   self_similarity_beeswarm_agg_plot +
     scale_y_continuous(position = "right"),
   width = 1.5, height = 7.5
@@ -870,18 +561,39 @@ ggsave(
 
 
 # This is NOT self-similarity, it's the whole query-target similarity
-self_similarity_beeswarm_agg_plot <- self_similarity_beeswarm_data %>%
+# ONLY top 5 targets, beeswarm version
+
+self_similarity_beeswarm_data <- R4 %>%
+  # filter(is.na(cutoff) | cutoff == 0.7) %>%
+  mutate(
+    self_similarity = if_else(
+      lspci_id_q == lspci_id_t,
+      "self_similarity",
+      "cross_similarity"
+    ) %>%
+      fct_relevel("cross_similarity")
+  ) %>%
+  arrange(self_similarity)
+
+
+self_similarity_beeswarm_split <- self_similarity_beeswarm_data %>%
+  mutate(
+    across(
+      source,
+      \(x) recode(x, "dge" = "DGE", "l1000" = "L1000")
+    )
+  ) %>%
   ggplot(
-    aes(source, tau, fill = self_similarity)
+    aes(source, tau, color = self_similarity, size = self_similarity)
   ) +
   geom_quasirandom(
-    data = ~filter(.x, self_similarity == "cross_similarity"),
-    shape = 21,
-    size = 1,
-    color = "NA",
+    shape = 16,
+    # size = 1,
+    # color = "NA",
     method = "quasirandom",
     bandwidth = 0.2,
-    width = 0.5
+    width = 0.45,
+    alpha = .5
   ) +
   # geom_beeswarm(
   #     data = ~filter(.x, self_similarity == "cross_similarity"),
@@ -889,40 +601,48 @@ self_similarity_beeswarm_agg_plot <- self_similarity_beeswarm_data %>%
   #     color = "NA",
   #     priority = "random"
   # ) +
-  scale_fill_manual(
+  scale_color_manual(
     values = c(
       self_similarity = "#FF0000",
       cross_similarity = "#00000088"
     ),
     guide = FALSE
   ) +
-  facet_wrap(~source, scales = "free", ncol = 1) +
+  scale_size_manual(
+    values = c(
+      self_similarity = 2,
+      cross_similarity = 1.5
+    ),
+    guide = FALSE
+  ) +
+  # facet_wrap(~source, nrow = 1) +
   theme_light() +
   theme_bold() +
+  scale_x_discrete(position = "top") +
   theme(
     strip.background = element_blank(),
     strip.text = element_blank(),
     panel.border = element_blank(),
     panel.grid.major.x = element_blank(),
     axis.title.x = element_blank(),
-    axis.text.x = element_blank()
+    axis.text.x = element_text(angle = 0, hjust = .5)
   ) +
-  scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
-  labs(x = NULL, y = "Tau")
-
+  # scale_y_continuous(position = "right", trans = logit_p_trans(-101, 101)) +
+  labs(x = "Query source", y = "Tau")
 
 ggsave(
-  file.path(wd, "fig2b_self_similarity_beeswarm_agg_logit.pdf"),
-  self_similarity_beeswarm_agg_plot,
-  width = 1.5, height = 7.5
+  file.path(wd, "fig2b_compound_targets_self_similarity_beeswarm_agg_side_by_side.pdf"),
+  self_similarity_beeswarm_split,
+  width = 2.5, height = 4
 )
 
 ggsave(
-  file.path(wd, "fig2b_self_similarity_beeswarm_agg_linear.pdf"),
+  file.path(wd, "fig2b_compound_targets_self_similarity_beeswarm_agg_linear.pdf"),
   self_similarity_beeswarm_agg_plot +
     scale_y_continuous(position = "right"),
   width = 1.5, height = 7.5
 )
+
 
 self_similarity_stats <- R4 %>%
   group_by(source, lspci_id_q, name_q, cutoff) %>%
